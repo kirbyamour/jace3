@@ -3,6 +3,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { supabaseServer } from "@/lib/supabase/server";
 import { generate } from "@/lib/gateway";
 import { buildSystemPrompt, trimRecent } from "@/lib/context/builder";
+import { historyTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import type { ChatMessage } from "@/lib/gateway/types";
 
 export const runtime = "nodejs";
@@ -78,13 +79,24 @@ async function handleChat(req: NextRequest) {
 
   const recent = trimRecent(history);
   const { system, personaVersion } = buildSystemPrompt({ recentMessages: recent, profileFacts: facts ?? [] });
-  const { stream, modelId } = await generate(system, recent);
+  const { stream, modelId } = await generate(system, recent, {
+    tools: historyTools, runTool: makeHistoryExecutor(db), maxToolRounds: 3,
+  });
+
+  // Persist the assistant row BEFORE streaming (pre-stream writes are reliable);
+  // final content lands via end-of-stream update AND a client-side confirm.
+  const { data: asstRow, error: asstErr } = await db.from("messages").insert({
+    conversation_id: conversationId, user_id: user.id, role: "assistant",
+    content: "…", model_id: modelId, persona_version: personaVersion, parent_id: userMsgId,
+  }).select("id").single();
+  if (asstErr) console.error("[jace-chat] placeholder insert:", asstErr);
+  const assistantId: string | null = asstRow?.id ?? null;
 
   const encoder = new TextEncoder();
   let full = "";
   const out = new ReadableStream({
     async start(controller) {
-      controller.enqueue(encoder.encode(`event: meta\ndata: ${JSON.stringify({ conversationId, userMsgId, modelId })}\n\n`));
+      controller.enqueue(encoder.encode(`event: meta\ndata: ${JSON.stringify({ conversationId, userMsgId, modelId, assistantId })}\n\n`));
       const reader = stream.getReader();
       try {
         for (;;) {
@@ -96,17 +108,11 @@ async function handleChat(req: NextRequest) {
       } catch (e) {
         console.error("[jace-chat] stream error:", e);
       } finally {
-        let assistantId: string | null = null;
-        try {
-          const { data, error } = await db.from("messages").insert({
-            conversation_id: conversationId, user_id: user.id, role: "assistant",
-            content: full || "…", model_id: modelId, persona_version: personaVersion,
-            parent_id: userMsgId,
-          }).select("id").single();
-          if (error) console.error("[jace-chat] assistant insert FAILED:", error);
-          else assistantId = data.id;
-        } catch (e) {
-          console.error("[jace-chat] assistant insert threw:", e);
+        if (assistantId && full) {
+          try {
+            const { error } = await db.from("messages").update({ content: full }).eq("id", assistantId);
+            if (error) console.error("[jace-chat] final update FAILED:", error);
+          } catch (e) { console.error("[jace-chat] final update threw:", e); }
         }
         controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ assistantId })}\n\n`));
         controller.close();

@@ -4,11 +4,22 @@
 
 export type ChatMessage = { role: "user" | "assistant" | "system"; content: string };
 
+export type ToolDef = {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+};
+
+export type ToolExecutor = (name: string, input: Record<string, unknown>) => Promise<string>;
+
 export type GenerateOptions = {
   modelId?: string;          // key into config/models.json; default = config.active
   maxTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
+  tools?: ToolDef[];         // native tool use (adapters may ignore)
+  runTool?: ToolExecutor;    // executes a tool call, returns JSON string result
+  maxToolRounds?: number;    // default 3
 };
 
 export type GenerateResult = {

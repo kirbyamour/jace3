@@ -121,7 +121,7 @@ export default function Chat() {
       if (!res.ok || !res.body) throw new Error(await res.text());
       const reader = res.body.getReader();
       const dec = new TextDecoder();
-      let buf = ""; let acc = ""; let meta: { conversationId?: string; userMsgId?: string } = {};
+      let buf = ""; let acc = ""; let meta: { conversationId?: string; userMsgId?: string; assistantId?: string } = {};
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -146,7 +146,11 @@ export default function Chat() {
           }
           if (frame.includes("event: done")) {
             const d = JSON.parse(dataLine.slice(5));
-            if (d.assistantId) setMsgs((m) => m.map((x) => (x.id === localAsst.id ? { ...x, id: d.assistantId } : x)));
+            const aid = d.assistantId ?? meta.assistantId;
+            if (aid) {
+              setMsgs((m) => m.map((x) => (x.id === localAsst.id ? { ...x, id: aid } : x)));
+              if (acc) await sb.current.from("messages").update({ content: acc }).eq("id", aid); // client confirm
+            }
             continue;
           }
           acc += JSON.parse(dataLine.slice(5));
@@ -195,6 +199,7 @@ export default function Chat() {
   }
 
   function stop() { abortRef.current?.abort(); setStreaming(false); }
+  // note: on stop, the placeholder row already exists server-side; partial text persists on next confirm.
 
   async function copyMsg(m: Msg) { await navigator.clipboard.writeText(m.content); }
 
