@@ -52,7 +52,11 @@ async function reflectOne(db: SupabaseClient, userId: string, convId: string): P
 
   let parsed: any;
   try { parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)); }
-  catch { console.error("[reflect] unparseable output for", convId); return false; }
+  catch {
+    console.error("[reflect] unparseable output for", convId, "— marking done (best-effort)");
+    await db.from("reflections_log").upsert({ user_id: userId, conversation_id: convId }, { onConflict: "user_id,conversation_id" });
+    return true;
+  }
 
   for (const f of parsed.facts ?? []) {
     if (!f.key || !f.value) continue;
@@ -131,6 +135,7 @@ export async function POST(req: NextRequest) {
       let done = 0;
       for (const row of pending ?? []) {
         if (await reflectOne(db, user.id, row.cid)) done++;
+        await new Promise((res) => setTimeout(res, 1500)); // breathe: leave rate-limit room for live chat
       }
       if (body.renarrate || (pending ?? []).length < batch) await renarrate(db, user.id);
       const { count } = await db.from("reflections_log").select("*", { count: "exact", head: true });
