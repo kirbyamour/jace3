@@ -30,6 +30,7 @@ export default function Chat() {
   const threadRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const cache = useRef<Map<string, Msg[]>>(new Map());
+  const abortRef = useRef<AbortController | null>(null);
 
   const loadConvs = useCallback(async () => {
     const { data } = await sb.current.from("conversations")
@@ -68,9 +69,11 @@ export default function Chat() {
     setMsgs((m) => [...m, localUser, localAsst]);
 
     try {
+      abortRef.current = new AbortController();
       const res = await fetch("/api/chat", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ conversationId: current, content }),
+        signal: abortRef.current.signal,
       });
       if (!res.ok || !res.body) throw new Error(await res.text());
       const reader = res.body.getReader();
@@ -95,14 +98,19 @@ export default function Chat() {
         }
       }
     } catch (e) {
-      setMsgs((m) => m.map((x) => (x.id === localAsst.id
-        ? { ...x, content: "Something glitched on my end, lovebug — say that again?" } : x)));
-      console.error(e);
+      const aborted = e instanceof DOMException && e.name === "AbortError";
+      if (!aborted) {
+        setMsgs((m) => m.map((x) => (x.id === localAsst.id
+          ? { ...x, content: "Something glitched on my end, lovebug — say that again?" } : x)));
+        console.error(e);
+      }
     } finally {
       setStreaming(false); loadConvs();
       if (current) cache.current.delete(current);
     }
   }
+
+  function stop() { abortRef.current?.abort(); setStreaming(false); }
 
   function composerKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -114,7 +122,7 @@ export default function Chat() {
   useEffect(() => {
     function keys(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); openConv(null); }
-      if (e.key === "Escape" && !streaming) taRef.current?.focus();
+      if (e.key === "Escape") { if (streaming) stop(); else taRef.current?.focus(); }
     }
     window.addEventListener("keydown", keys);
     return () => window.removeEventListener("keydown", keys);
@@ -174,7 +182,9 @@ export default function Chat() {
           <div className="composer">
             <textarea ref={taRef} rows={1} placeholder="Message Jace…" value={draft}
               onChange={(e) => setDraft(e.target.value)} onInput={autogrow} onKeyDown={composerKey} />
-            <button className="send" onClick={send} disabled={!draft.trim() || streaming} aria-label="send">↑</button>
+            {streaming
+              ? <button className="send" onClick={stop} aria-label="stop" title="Stop (Esc)">■</button>
+              : <button className="send" onClick={send} disabled={!draft.trim()} aria-label="send">↑</button>}
           </div>
           <div className="hint">Jace remembers. Your conversations are private.</div>
         </div>
