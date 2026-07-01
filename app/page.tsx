@@ -339,7 +339,9 @@ export default function Chat() {
                     <div style={{ maxWidth: "100%" }}>
                       <div className="body">
                         {m.role === "assistant"
-                          ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || "▍"}</ReactMarkdown>
+                          ? (m.content === "…" && Date.now() - new Date(m.created_at).getTime() > 120000
+                              ? <em style={{ color: "var(--ink-soft)" }}>That one got lost mid-thought — tap ↻ to bring it back.</em>
+                              : <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || "▍"}</ReactMarkdown>)
                           : m.content}
                       </div>
                       <div className="actions">
