@@ -76,7 +76,7 @@ async function handleChat(req: NextRequest) {
 
   const lastUserText = (regenerateOf ? history.filter((h) => h.role === "user").pop()?.content : content) ?? "";
   const [{ data: facts }, { data: lifeStory }, { data: arcs }, { data: eps }] = await Promise.all([
-    db.from("profile_facts").select("key, value, confidence").eq("tombstoned", false).is("superseded_by", null).limit(50),
+    db.from("profile_facts").select("key, value, confidence").eq("tombstoned", false).is("superseded_by", null).order("confidence", { ascending: false }).order("created_at", { ascending: false }).limit(40),
     db.from("narratives").select("content").eq("scope", "life_story").maybeSingle(),
     db.from("arcs").select("name, kind, status, summary").order("updated_at", { ascending: false }).limit(20),
     db.rpc("relevant_episodes", { q: lastUserText.slice(0, 200), max_rows: 6 }),
