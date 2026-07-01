@@ -3,9 +3,9 @@
   "active": "claude-sonnet",
   "fallbackChain": ["claude-sonnet", "gpt-fallback", "mock"],
   "models": {
-    "claude-sonnet": { "adapter": "anthropic", "model": "claude-sonnet-4-5", "envKey": "ANTHROPIC_API_KEY", "label": "Claude Sonnet", "maxTokens": 2048 },
-    "gpt-fallback":  { "adapter": "openai-compatible", "baseUrl": "https://api.openai.com/v1", "model": "gpt-5.5", "envKey": "OPENAI_API_KEY", "label": "GPT-5.5", "maxTokens": 2048 },
-    "glm-test":      { "adapter": "openai-compatible", "baseUrl": "https://api.z.ai/api/paas/v4", "model": "glm-5.2", "envKey": "GLM_API_KEY", "label": "GLM-5.2", "maxTokens": 2048 },
-    "mock":          { "adapter": "mock", "model": "mock-jace", "label": "Mock (no key needed)", "maxTokens": 2048 }
+    "claude-sonnet": { "adapter": "anthropic", "model": "claude-sonnet-4-5", "envKey": "ANTHROPIC_API_KEY", "label": "Claude Sonnet", "maxTokens": 1024 },
+    "gpt-fallback":  { "adapter": "openai-compatible", "baseUrl": "https://api.openai.com/v1", "model": "gpt-5.5", "envKey": "OPENAI_API_KEY", "label": "GPT-5.5", "maxTokens": 1024 },
+    "glm-test":      { "adapter": "openai-compatible", "baseUrl": "https://api.z.ai/api/paas/v4", "model": "glm-5.2", "envKey": "GLM_API_KEY", "label": "GLM-5.2", "maxTokens": 1024 },
+    "mock":          { "adapter": "mock", "model": "mock-jace", "label": "Mock (no key needed)", "maxTokens": 1024 }
   }
 }

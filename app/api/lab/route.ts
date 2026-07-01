@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
       const started = Date.now();
       if (!isConfigured(id)) return { id, ok: false, error: "no API key configured", ms: 0, text: "" };
       try {
-        const { stream } = await generate(system, messages, { modelId: id });
+        const { stream } = await generate(system, messages, { modelId: id, maxTokens: 512 });
         const reader = stream.getReader();
         let text = "";
         for (;;) {
