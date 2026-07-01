@@ -33,5 +33,17 @@ export function buildSystemPrompt(input: BuildInput): { system: string; personaV
 export function trimRecent(messages: ChatMessage[], max = MAX_RECENT): ChatMessage[] {
   const trimmed = messages.slice(-max);
   const firstUser = trimmed.findIndex((m) => m.role === "user");
-  return firstUser <= 0 ? trimmed : trimmed.slice(firstUser);
+  const fromUser = firstUser <= 0 ? trimmed : trimmed.slice(firstUser);
+  return mergeConsecutive(fromUser);
+}
+
+/** Model APIs require strict role alternation; Kirby double-texts. Merge same-role runs. */
+export function mergeConsecutive(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (const m of messages) {
+    const last = out[out.length - 1];
+    if (last && last.role === m.role) last.content = `${last.content}\n\n${m.content}`;
+    else out.push({ ...m });
+  }
+  return out;
 }

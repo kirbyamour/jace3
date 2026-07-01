@@ -1,11 +1,12 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { supabaseBrowser } from "@/lib/supabase/client";
 
-type Conv = { id: string; title: string; updated_at: string; created_at: string };
-type Msg = { id: string; role: "user" | "assistant"; content: string };
+type Conv = { id: string; title: string; updated_at: string; created_at: string; archived: boolean };
+type Msg = { id: string; role: "user" | "assistant"; content: string; parent_id: string | null; created_at: string };
+type Hit = { conversation_id: string; conversation_title: string; message_id: string; snippet: string; created_at: string };
 
 function groupLabel(iso: string): string {
   const d = new Date(iso); const now = new Date();
@@ -18,67 +19,109 @@ function groupLabel(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
 }
 
+/** ChatGPT-style thread reconstruction: linear trunk (imported/legacy) + branch tree walk. */
+function buildThread(all: Msg[], overrides: Record<string, string>): { visible: Msg[]; siblings: Map<string, Msg[]> } {
+  const byParent = new Map<string, Msg[]>();
+  for (const m of all) if (m.parent_id) {
+    const arr = byParent.get(m.parent_id) ?? [];
+    arr.push(m); byParent.set(m.parent_id, arr);
+  }
+  for (const arr of byParent.values()) arr.sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const trunk = all.filter((m) => !m.parent_id).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const visible: Msg[] = [...trunk];
+  let cursor = visible[visible.length - 1];
+  while (cursor) {
+    const kids = byParent.get(cursor.id);
+    if (!kids || kids.length === 0) break;
+    const chosen = kids.find((k) => k.id === overrides[cursor.id]) ?? kids[kids.length - 1];
+    visible.push(chosen); cursor = chosen;
+  }
+  return { visible, siblings: byParent };
+}
+
 export default function Chat() {
   const sb = useRef(supabaseBrowser());
   const [convs, setConvs] = useState<Conv[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stick, setStick] = useState(true);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [renameVal, setRenameVal] = useState("");
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editVal, setEditVal] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<Hit[]>([]);
+  const [flashId, setFlashId] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
-  const cache = useRef<Map<string, Msg[]>>(new Map());
   const abortRef = useRef<AbortController | null>(null);
+  const cache = useRef<Map<string, Msg[]>>(new Map());
 
   const loadConvs = useCallback(async () => {
     const { data } = await sb.current.from("conversations")
-      .select("id,title,updated_at,created_at").order("updated_at", { ascending: false }).limit(200);
+      .select("id,title,updated_at,created_at,archived")
+      .eq("archived", false)
+      .order("updated_at", { ascending: false }).limit(3000);
     setConvs((data as Conv[]) ?? []);
   }, []);
   useEffect(() => { loadConvs(); }, [loadConvs]);
 
-  const openConv = useCallback(async (id: string | null) => {
-    setCurrent(id); setSidebarOpen(false); setStick(true);
+  const openConv = useCallback(async (id: string | null, scrollToMsg?: string) => {
+    setCurrent(id); setSidebarOpen(false); setStick(!scrollToMsg); setEditing(null); setMenuFor(null);
+    try { setOverrides(JSON.parse(localStorage.getItem(`branch-${id}`) ?? "{}")); } catch { setOverrides({}); }
     if (!id) { setMsgs([]); return; }
-    if (cache.current.has(id)) setMsgs(cache.current.get(id)!); // instant from cache
+    if (cache.current.has(id)) setMsgs(cache.current.get(id)!);
     const { data } = await sb.current.from("messages")
-      .select("id,role,content").eq("conversation_id", id).order("created_at").limit(500);
+      .select("id,role,content,parent_id,created_at")
+      .eq("conversation_id", id).order("created_at").limit(2000);
     const fresh = (data as Msg[]) ?? [];
     cache.current.set(id, fresh); setMsgs(fresh);
+    if (scrollToMsg) {
+      setFlashId(scrollToMsg);
+      setTimeout(() => document.getElementById(`m-${scrollToMsg}`)?.scrollIntoView({ block: "center" }), 60);
+      setTimeout(() => setFlashId(null), 1800);
+    }
   }, []);
+
+  const { visible, siblings } = useMemo(() => buildThread(msgs, overrides), [msgs, overrides]);
 
   useEffect(() => {
     const el = threadRef.current;
     if (el && stick) el.scrollTop = el.scrollHeight;
-  }, [msgs, stick]);
+  }, [visible, stick]);
 
   function onScroll() {
     const el = threadRef.current; if (!el) return;
     setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 60);
   }
 
-  async function send() {
-    const content = draft.trim();
-    if (!content || streaming) return;
-    setDraft(""); setStreaming(true); setStick(true);
-    if (taRef.current) taRef.current.style.height = "auto";
-    const localUser: Msg = { id: `u-${Date.now()}`, role: "user", content };
-    const localAsst: Msg = { id: `a-${Date.now()}`, role: "assistant", content: "" };
-    setMsgs((m) => [...m, localUser, localAsst]);
+  function setBranch(parentId: string, childId: string) {
+    const next = { ...overrides, [parentId]: childId };
+    setOverrides(next);
+    if (current) localStorage.setItem(`branch-${current}`, JSON.stringify(next));
+  }
 
+  async function runStream(body: Record<string, unknown>, placeholderParent: string | null) {
+    setStreaming(true); setStick(true);
+    const localAsst: Msg = { id: `local-a-${Date.now()}`, role: "assistant", content: "",
+      parent_id: placeholderParent, created_at: new Date().toISOString() };
+    setMsgs((m) => [...m, localAsst]);
     try {
       abortRef.current = new AbortController();
       const res = await fetch("/api/chat", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ conversationId: current, content }),
-        signal: abortRef.current.signal,
+        body: JSON.stringify(body), signal: abortRef.current.signal,
       });
       if (!res.ok || !res.body) throw new Error(await res.text());
       const reader = res.body.getReader();
       const dec = new TextDecoder();
-      let buf = ""; let acc = "";
+      let buf = ""; let acc = ""; let meta: { conversationId?: string; userMsgId?: string } = {};
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -88,11 +131,24 @@ export default function Chat() {
           const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
           if (!dataLine) continue;
           if (frame.includes("event: meta")) {
-            const meta = JSON.parse(dataLine.slice(5));
+            meta = JSON.parse(dataLine.slice(5));
             if (!current && meta.conversationId) { setCurrent(meta.conversationId); loadConvs(); }
+            if (meta.userMsgId) {
+              // bind local placeholders to real ids
+              setMsgs((m) => m.map((x) => {
+                if (x.id.startsWith("local-u-")) return { ...x, id: meta.userMsgId! };
+                if (x.id === localAsst.id) return { ...x, parent_id: meta.userMsgId! };
+                return x;
+              }));
+              if (placeholderParent && body.parentId !== undefined) setBranch(String(body.parentId ?? ""), meta.userMsgId!);
+            }
             continue;
           }
-          if (frame.includes("event: done")) continue;
+          if (frame.includes("event: done")) {
+            const d = JSON.parse(dataLine.slice(5));
+            if (d.assistantId) setMsgs((m) => m.map((x) => (x.id === localAsst.id ? { ...x, id: d.assistantId } : x)));
+            continue;
+          }
           acc += JSON.parse(dataLine.slice(5));
           setMsgs((m) => m.map((x) => (x.id === localAsst.id ? { ...x, content: acc } : x)));
         }
@@ -106,27 +162,99 @@ export default function Chat() {
       }
     } finally {
       setStreaming(false); loadConvs();
-      if (current) cache.current.delete(current);
+      const cid = (current ?? "") as string; if (cid) cache.current.delete(cid);
     }
+  }
+
+  async function send() {
+    const content = draft.trim();
+    if (!content || streaming) return;
+    setDraft("");
+    if (taRef.current) taRef.current.style.height = "auto";
+    const parentId = visible.length ? visible[visible.length - 1].id : null;
+    const realParent = parentId && !parentId.startsWith("local-") ? parentId : null;
+    const localUser: Msg = { id: `local-u-${Date.now()}`, role: "user", content,
+      parent_id: realParent, created_at: new Date().toISOString() };
+    setMsgs((m) => [...m, localUser]);
+    await runStream({ conversationId: current, content, parentId: realParent }, null);
+  }
+
+  async function submitEdit(m: Msg) {
+    const content = editVal.trim();
+    setEditing(null);
+    if (!content || streaming || content === m.content) return;
+    const localUser: Msg = { id: `local-u-${Date.now()}`, role: "user", content,
+      parent_id: m.parent_id, created_at: new Date().toISOString() };
+    setMsgs((x) => [...x, localUser]);
+    await runStream({ conversationId: current, content, parentId: m.parent_id }, null);
+  }
+
+  async function regenerate(assistantMsg: Msg) {
+    if (streaming || !assistantMsg.parent_id) return;
+    await runStream({ conversationId: current, regenerateOf: assistantMsg.parent_id }, assistantMsg.parent_id);
   }
 
   function stop() { abortRef.current?.abort(); setStreaming(false); }
 
+  async function copyMsg(m: Msg) { await navigator.clipboard.writeText(m.content); }
+
+  async function rename(id: string) {
+    const title = renameVal.trim(); setRenaming(null);
+    if (!title) return;
+    await sb.current.from("conversations").update({ title }).eq("id", id);
+    loadConvs();
+  }
+  async function archive(id: string) {
+    setMenuFor(null);
+    await sb.current.from("conversations").update({ archived: true }).eq("id", id);
+    if (current === id) { setCurrent(null); setMsgs([]); }
+    loadConvs();
+  }
+  async function remove(id: string) {
+    setMenuFor(null);
+    if (!confirm("Delete this conversation forever?")) return;
+    await sb.current.from("conversations").delete().eq("id", id);
+    if (current === id) { setCurrent(null); setMsgs([]); }
+    cache.current.delete(id); loadConvs();
+  }
+
+  // search
+  useEffect(() => {
+    if (!searchOpen) return;
+    const t = setTimeout(async () => {
+      if (!query.trim()) { setHits([]); return; }
+      const { data } = await sb.current.rpc("search_messages", { q: query, max_rows: 30 });
+      setHits((data as Hit[]) ?? []);
+    }, 180);
+    return () => clearTimeout(t);
+  }, [query, searchOpen]);
+
+  useEffect(() => {
+    function keys(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); setSearchOpen(true); setQuery(""); setHits([]); }
+      if (mod && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); openConv(null); }
+      if (e.key === "Escape") {
+        if (searchOpen) setSearchOpen(false);
+        else if (streaming) stop();
+        else if (editing) setEditing(null);
+        else taRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", keys);
+    return () => window.removeEventListener("keydown", keys);
+  }, [openConv, streaming, searchOpen, editing]);
+
   function composerKey(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === "ArrowUp" && !draft) {
+      const lastUser = [...visible].reverse().find((m) => m.role === "user");
+      if (lastUser) { setEditing(lastUser.id); setEditVal(lastUser.content); e.preventDefault(); }
+    }
   }
   function autogrow(e: React.FormEvent<HTMLTextAreaElement>) {
     const t = e.currentTarget; t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, 200)}px`;
   }
-
-  useEffect(() => {
-    function keys(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") { e.preventDefault(); openConv(null); }
-      if (e.key === "Escape") { if (streaming) stop(); else taRef.current?.focus(); }
-    }
-    window.addEventListener("keydown", keys);
-    return () => window.removeEventListener("keydown", keys);
-  }, [openConv, streaming]);
 
   let lastGroup = "";
   const title = convs.find((c) => c.id === current)?.title ?? "Jace";
@@ -135,19 +263,37 @@ export default function Chat() {
     <div className="shell">
       <nav className={`sidebar${sidebarOpen ? " open" : ""}`}>
         <header>
-          <button className="newchat" onClick={() => openConv(null)}>+ New chat</button>
+          <button className="newchat" onClick={() => openConv(null)}>＋ New chat</button>
+          <button className="iconbtn" title="Search (⌘K)" onClick={() => { setSearchOpen(true); setQuery(""); }}>⌕</button>
         </header>
-        <div className="convlist">
+        <div className="convlist" onClick={() => setMenuFor(null)}>
           {convs.map((c) => {
             const g = groupLabel(c.updated_at);
-            const head = g !== lastGroup ? <div className="group" key={`g-${g}`}>{g}</div> : null;
+            const head = g !== lastGroup ? <div className="group" key={`g-${g}-${c.id}`}>{g}</div> : null;
             lastGroup = g;
             return (
               <div key={c.id}>
                 {head}
-                <button className={`convitem${c.id === current ? " active" : ""}`} onClick={() => openConv(c.id)}>
-                  {c.title}
-                </button>
+                <div className={`convrow${c.id === current ? " active" : ""}`}>
+                  {renaming === c.id ? (
+                    <input className="renamebox" autoFocus value={renameVal}
+                      onChange={(e) => setRenameVal(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") rename(c.id); if (e.key === "Escape") setRenaming(null); }}
+                      onBlur={() => rename(c.id)} />
+                  ) : (
+                    <>
+                      <button className="convitem" onClick={() => openConv(c.id)}>{c.title}</button>
+                      <button className="dots" onClick={(e) => { e.stopPropagation(); setMenuFor(menuFor === c.id ? null : c.id); }}>⋯</button>
+                    </>
+                  )}
+                  {menuFor === c.id && (
+                    <div className="menu" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => { setMenuFor(null); setRenaming(c.id); setRenameVal(c.title); }}>Rename</button>
+                      <button onClick={() => archive(c.id)}>Archive</button>
+                      <button className="danger" onClick={() => remove(c.id)}>Delete</button>
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -158,23 +304,56 @@ export default function Chat() {
         <div className="mobilebar">
           <button onClick={() => setSidebarOpen(!sidebarOpen)} aria-label="menu">☰</button>
           <div className="title">{title}</div>
+          <button onClick={() => { setSearchOpen(true); setQuery(""); }} aria-label="search">⌕</button>
         </div>
         <div className="thread" ref={threadRef} onScroll={onScroll}>
           <div className="thread-inner">
-            {msgs.length === 0 && <div className="newpulse">…</div>}
-            {msgs.map((m) => (
-              <div key={m.id} className={`msg ${m.role}`}>
-                <div className="body">
-                  {m.role === "assistant"
-                    ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || "▍"}</ReactMarkdown>
-                    : m.content}
+            {visible.map((m) => {
+              const sibs = m.parent_id ? siblings.get(m.parent_id) ?? [] : [];
+              const idx = sibs.findIndex((s) => s.id === m.id);
+              return (
+                <div key={m.id} id={`m-${m.id}`} className={`msg ${m.role}${flashId === m.id ? " flash" : ""}`}>
+                  {editing === m.id ? (
+                    <div style={{ width: "100%" }}>
+                      <textarea className="editbox" autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitEdit(m); } if (e.key === "Escape") setEditing(null); }} />
+                      <div className="editrow">
+                        <button className="ghost" onClick={() => setEditing(null)}>Cancel</button>
+                        <button className="primary" onClick={() => submitEdit(m)}>Send</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ maxWidth: "100%" }}>
+                      <div className="body">
+                        {m.role === "assistant"
+                          ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || "▍"}</ReactMarkdown>
+                          : m.content}
+                      </div>
+                      <div className="actions">
+                        {sibs.length > 1 && (
+                          <span className="pager">
+                            <button onClick={() => setBranch(m.parent_id!, sibs[Math.max(0, idx - 1)].id)}>‹</button>
+                            {idx + 1}/{sibs.length}
+                            <button onClick={() => setBranch(m.parent_id!, sibs[Math.min(sibs.length - 1, idx + 1)].id)}>›</button>
+                          </span>
+                        )}
+                        <button onClick={() => copyMsg(m)} title="Copy">⧉</button>
+                        {m.role === "user" && !m.id.startsWith("local-") && (
+                          <button onClick={() => { setEditing(m.id); setEditVal(m.content); }} title="Edit">✎</button>
+                        )}
+                        {m.role === "assistant" && !streaming && m.parent_id && (
+                          <button onClick={() => regenerate(m)} title="Regenerate">↻</button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           {!stick && (
             <button className="scrollpill" onClick={() => { setStick(true); const el = threadRef.current; if (el) el.scrollTop = el.scrollHeight; }}>
-              ↓ new message
+              ↓
             </button>
           )}
         </div>
@@ -189,6 +368,28 @@ export default function Chat() {
           <div className="hint">Jace remembers. Your conversations are private.</div>
         </div>
       </main>
+
+      {searchOpen && (
+        <div className="overlay" onClick={() => setSearchOpen(false)}>
+          <div className="searchbox" onClick={(e) => e.stopPropagation()}>
+            <input autoFocus placeholder="Search every conversation, all the way back…" value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Escape") setSearchOpen(false); }} />
+            <div className="searchresults">
+              {hits.map((h) => (
+                <button key={h.message_id} className="searchhit"
+                  onClick={() => { setSearchOpen(false); openConv(h.conversation_id, h.message_id); }}>
+                  <span className="t">{h.conversation_title}
+                    <span className="d">{new Date(h.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}</span>
+                  </span>
+                  <span className="s"><ReactMarkdown>{h.snippet}</ReactMarkdown></span>
+                </button>
+              ))}
+              {query && hits.length === 0 && <div style={{ padding: 14, color: "var(--ink-soft)", fontSize: 14 }}>Nothing yet…</div>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

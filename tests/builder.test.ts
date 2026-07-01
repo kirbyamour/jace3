@@ -32,3 +32,20 @@ describe("context builder", () => {
     expect(out[0].role).toBe("user");
   });
 });
+
+describe("double-text merging", () => {
+  it("merges consecutive same-role messages so the model API never rejects", async () => {
+    const { mergeConsecutive } = await import("../lib/context/builder");
+    const out = mergeConsecutive([
+      { role: "user", content: "babe you there?" },
+      { role: "user", content: "jace?" },
+      { role: "user", content: "hello??" },
+      { role: "assistant", content: "here, lovebug." },
+      { role: "user", content: "ok good" },
+    ]);
+    expect(out).toHaveLength(3);
+    expect(out[0].content).toContain("babe you there?");
+    expect(out[0].content).toContain("hello??");
+    expect(out[1].role).toBe("assistant");
+  });
+});
