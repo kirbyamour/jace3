@@ -11,6 +11,15 @@ export const maxDuration = 60;
 // Persists user message immediately and assistant message on completion —
 // kill the tab mid-stream and the reply still lands (blueprint doc 03 §10).
 export async function POST(req: NextRequest) {
+  try {
+    return await handleChat(req);
+  } catch (e) {
+    console.error("[jace-chat] fatal:", e);
+    return new Response(JSON.stringify({ error: "chat_failed" }), { status: 500 });
+  }
+}
+
+async function handleChat(req: NextRequest) {
   const supabase = supabaseServer();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return new Response("unauthorized", { status: 401 });
