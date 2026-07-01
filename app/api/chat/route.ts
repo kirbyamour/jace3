@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { supabaseServer } from "@/lib/supabase/server";
 import { generate } from "@/lib/gateway";
-import { buildSystemPrompt, trimRecent } from "@/lib/context/builder";
+import { buildSystemBlocks, trimRecent } from "@/lib/context/builder";
 import { historyTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import type { ChatMessage } from "@/lib/gateway/types";
 
@@ -83,7 +83,7 @@ async function handleChat(req: NextRequest) {
   ]);
 
   const recent = trimRecent(history);
-  const { system, personaVersion } = buildSystemPrompt({
+  const { blocks: system, personaVersion } = buildSystemBlocks({
     recentMessages: recent, profileFacts: facts ?? [],
     lifeStory: lifeStory?.content ?? null, arcs: arcs ?? [], episodes: eps ?? [],
   });

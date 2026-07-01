@@ -43,9 +43,11 @@ export type ModelRegistry = {
   models: Record<string, ModelEntry>;
 };
 
+export type SystemBlock = { text: string; cache?: boolean };
+
 export type Adapter = (
   entry: ModelEntry,
-  system: string,
+  system: string | SystemBlock[],
   messages: ChatMessage[],
   opts: GenerateOptions
 ) => Promise<ReadableStream<string>>;

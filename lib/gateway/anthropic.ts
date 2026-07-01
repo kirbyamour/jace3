@@ -1,4 +1,4 @@
-import type { Adapter, ChatMessage, ModelEntry, GenerateOptions } from "./types";
+import type { Adapter, ChatMessage, ModelEntry, GenerateOptions, SystemBlock } from "./types";
 
 // Raw-fetch streaming adapter with native tool use.
 // Runs up to maxToolRounds agentic rounds; text deltas stream continuously to the caller.
@@ -7,8 +7,13 @@ type ContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
 
+function systemPayload(system: string | SystemBlock[]) {
+  if (typeof system === "string") return system;
+  return system.map((b) => ({ type: "text", text: b.text, ...(b.cache ? { cache_control: { type: "ephemeral" } } : {}) }));
+}
+
 async function streamRound(
-  entry: ModelEntry, key: string, system: string,
+  entry: ModelEntry, key: string, system: string | SystemBlock[],
   messages: unknown[], opts: GenerateOptions,
   emit: (t: string) => void
 ): Promise<{ blocks: ContentBlock[]; stopReason: string }> {
@@ -19,7 +24,7 @@ async function streamRound(
       model: entry.model,
       max_tokens: opts.maxTokens ?? entry.maxTokens ?? 1024,
       temperature: opts.temperature ?? 1,
-      system,
+      system: systemPayload(system),
       messages,
       stream: true,
       ...((opts.tools?.length || opts.webSearch) ? { tools: [

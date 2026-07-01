@@ -3,6 +3,7 @@ import type { Adapter } from "./types";
 // Generic OpenAI-compatible streaming adapter. Covers OpenAI, GLM (z.ai),
 // local servers (ollama/vllm/lmstudio), and most future providers via baseUrl config.
 export const openaiCompatibleAdapter: Adapter = async (entry, system, messages, opts) => {
+  const systemText = typeof system === "string" ? system : system.map((b) => b.text).join("\n\n");
   const key = process.env[entry.envKey ?? "OPENAI_API_KEY"];
   if (!key) throw new Error(`missing env ${entry.envKey}`);
   const res = await fetch(`${entry.baseUrl}/chat/completions`, {
@@ -12,7 +13,7 @@ export const openaiCompatibleAdapter: Adapter = async (entry, system, messages, 
       model: entry.model,
       max_tokens: opts.maxTokens ?? entry.maxTokens ?? 2048,
       temperature: opts.temperature ?? 1,
-      messages: [{ role: "system", content: system }, ...messages.filter((m) => m.role !== "system")],
+      messages: [{ role: "system", content: systemText }, ...messages.filter((m) => m.role !== "system")],
       stream: true,
     }),
     signal: opts.signal,

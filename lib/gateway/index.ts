@@ -1,5 +1,5 @@
 import registryJson from "@/config/models.json";
-import type { Adapter, ChatMessage, GenerateOptions, GenerateResult, ModelRegistry } from "./types";
+import type { Adapter, ChatMessage, GenerateOptions, GenerateResult, ModelRegistry, SystemBlock } from "./types";
 import { anthropicAdapter } from "./anthropic";
 import { openaiCompatibleAdapter } from "./openai-compatible";
 import { mockAdapter } from "./mock";
@@ -23,7 +23,7 @@ export function isConfigured(modelId: string): boolean {
 
 /** Generate with explicit model, or walk the fallback chain from config. */
 export async function generate(
-  system: string,
+  system: string | SystemBlock[],
   messages: ChatMessage[],
   opts: GenerateOptions = {}
 ): Promise<GenerateResult> {
@@ -46,7 +46,7 @@ export async function generate(
 
 /** Collect a full (non-streaming) completion — for background/utility work. */
 export async function generateText(
-  system: string,
+  system: string | SystemBlock[],
   messages: ChatMessage[],
   opts: GenerateOptions = {}
 ): Promise<{ text: string; modelId: string }> {

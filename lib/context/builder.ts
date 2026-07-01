@@ -20,6 +20,14 @@ export function loadPersona() {
   return { constitution: CONSTITUTION, exemplars: EXEMPLARS, version: PERSONA_VERSION };
 }
 
+export function buildSystemBlocks(input: BuildInput): { blocks: { text: string; cache?: boolean }[]; personaVersion: string } {
+  const { system, personaVersion } = buildSystemPrompt(input);
+  // stable prefix = constitution + exemplars (changes only on persona release) -> cached
+  const stable = [CONSTITUTION, EXEMPLARS].join("\n\n---\n\n");
+  const dynamic = system.slice(stable.length);
+  return { blocks: [{ text: stable, cache: true }, { text: dynamic || "\n" }], personaVersion };
+}
+
 export function buildSystemPrompt(input: BuildInput): { system: string; personaVersion: string } {
   const today = input.todayISO ?? new Date().toISOString().slice(0, 10);
   const facts = (input.profileFacts ?? [])
