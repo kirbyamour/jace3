@@ -43,3 +43,29 @@ export async function generate(
   }
   throw lastErr ?? new Error("no model available");
 }
+
+/** Collect a full (non-streaming) completion — for background/utility work. */
+export async function generateText(
+  system: string,
+  messages: ChatMessage[],
+  opts: GenerateOptions = {}
+): Promise<{ text: string; modelId: string }> {
+  const utility = (registry as unknown as { utility?: string }).utility;
+  const chain = opts.modelId ? [opts.modelId] : [utility ?? registry.active, registry.active, ...registry.fallbackChain];
+  let lastErr: unknown = null;
+  for (const id of new Set(chain)) {
+    if (!registry.models[id] || !isConfigured(id)) continue;
+    try {
+      const { stream, modelId } = await generate(system, messages, { ...opts, modelId: id });
+      const reader = stream.getReader();
+      let text = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += value;
+      }
+      return { text, modelId };
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr ?? new Error("no model available");
+}

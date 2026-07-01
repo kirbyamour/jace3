@@ -74,11 +74,19 @@ async function handleChat(req: NextRequest) {
     if (history.length === 0) history = [{ role: "user", content }];
   }
 
-  const { data: facts } = await db
-    .from("profile_facts").select("key, value").eq("tombstoned", false).limit(50);
+  const lastUserText = (regenerateOf ? history.filter((h) => h.role === "user").pop()?.content : content) ?? "";
+  const [{ data: facts }, { data: lifeStory }, { data: arcs }, { data: eps }] = await Promise.all([
+    db.from("profile_facts").select("key, value, confidence").eq("tombstoned", false).is("superseded_by", null).limit(50),
+    db.from("narratives").select("content").eq("scope", "life_story").maybeSingle(),
+    db.from("arcs").select("name, kind, status, summary").order("updated_at", { ascending: false }).limit(20),
+    db.rpc("relevant_episodes", { q: lastUserText.slice(0, 200), max_rows: 6 }),
+  ]);
 
   const recent = trimRecent(history);
-  const { system, personaVersion } = buildSystemPrompt({ recentMessages: recent, profileFacts: facts ?? [] });
+  const { system, personaVersion } = buildSystemPrompt({
+    recentMessages: recent, profileFacts: facts ?? [],
+    lifeStory: lifeStory?.content ?? null, arcs: arcs ?? [], episodes: eps ?? [],
+  });
   const { stream, modelId } = await generate(system, recent, {
     tools: historyTools, runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
   });

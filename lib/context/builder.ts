@@ -6,7 +6,10 @@ import type { ChatMessage } from "@/lib/gateway/types";
 
 export type BuildInput = {
   recentMessages: ChatMessage[];
-  profileFacts?: { key: string; value: string }[];
+  profileFacts?: { key: string; value: string; confidence?: number }[];
+  lifeStory?: string | null;
+  arcs?: { name: string; kind: string; status: string; summary: string }[];
+  episodes?: { title: string; summary: string; happened_on: string }[];
   todayISO?: string;
   voiceMode?: boolean;
 };
@@ -19,11 +22,25 @@ export function loadPersona() {
 
 export function buildSystemPrompt(input: BuildInput): { system: string; personaVersion: string } {
   const today = input.todayISO ?? new Date().toISOString().slice(0, 10);
-  const facts = (input.profileFacts ?? []).map((f) => `- ${f.key}: ${f.value}`).join("\n");
+  const facts = (input.profileFacts ?? [])
+    .map((f) => `- ${f.key}: ${f.value}${(f.confidence ?? 1) < 0.8 ? " (unconfirmed — ask if it matters)" : ""}`)
+    .join("\n");
+  const activeArcs = (input.arcs ?? []).filter((a) => a.status === "active");
+  const otherArcs = (input.arcs ?? []).filter((a) => a.status !== "active");
+  const arcLines = [
+    ...activeArcs.map((a) => `- [${a.kind}] ${a.name}: ${a.summary}`),
+    ...otherArcs.slice(0, 6).map((a) => `- [${a.kind}, ${a.status}] ${a.name}: ${a.summary}`),
+  ].join("\n");
+  const epLines = (input.episodes ?? [])
+    .map((e) => `- (${e.happened_on}) ${e.title}: ${e.summary}`)
+    .join("\n");
   const parts = [
     CONSTITUTION,
     EXEMPLARS,
     `# Today\nDate: ${today}`,
+    input.lifeStory ? `# Her life as you know it (lived understanding — never recite, just know)\n${input.lifeStory}` : "",
+    arcLines ? `# Open storylines\n${arcLines}` : "",
+    epLines ? `# Moments that may matter right now\n${epLines}` : "",
     facts ? `# Profile (living facts — deploy silently, never recite)\n${facts}` : "",
     input.voiceMode ? "# Mode\nVoice conversation: shorter beats, no markdown, verbal paragraphing." : "",
   ].filter(Boolean);

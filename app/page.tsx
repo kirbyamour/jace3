@@ -72,8 +72,17 @@ export default function Chat() {
   }, []);
   useEffect(() => { loadConvs(); }, [loadConvs]);
 
+  const reflectSoon = useCallback((convId: string | null) => {
+    if (!convId) return;
+    try {
+      fetch("/api/reflect", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ conversationId: convId, renarrate: true }), keepalive: true }).catch(() => {});
+    } catch { /* best effort */ }
+  }, []);
+
   const openConv = useCallback(async (id: string | null, scrollToMsg?: string) => {
-    setCurrent(id); setSidebarOpen(false); setStick(!scrollToMsg); setEditing(null); setMenuFor(null);
+    setSidebarOpen(false); setStick(!scrollToMsg); setEditing(null); setMenuFor(null);
+    setCurrent((prev) => { if (prev && prev !== id) reflectSoon(prev); return id; });
     try { setOverrides(JSON.parse(localStorage.getItem(`branch-${id}`) ?? "{}")); } catch { setOverrides({}); }
     if (!id) { setMsgs([]); return; }
     if (cache.current.has(id)) setMsgs(cache.current.get(id)!);
@@ -87,7 +96,7 @@ export default function Chat() {
       setTimeout(() => document.getElementById(`m-${scrollToMsg}`)?.scrollIntoView({ block: "center" }), 60);
       setTimeout(() => setFlashId(null), 1800);
     }
-  }, []);
+  }, [reflectSoon]);
 
   const { visible, siblings } = useMemo(() => buildThread(msgs, overrides), [msgs, overrides]);
 
