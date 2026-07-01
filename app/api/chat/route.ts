@@ -80,7 +80,7 @@ async function handleChat(req: NextRequest) {
   const recent = trimRecent(history);
   const { system, personaVersion } = buildSystemPrompt({ recentMessages: recent, profileFacts: facts ?? [] });
   const { stream, modelId } = await generate(system, recent, {
-    tools: historyTools, runTool: makeHistoryExecutor(db), maxToolRounds: 2,
+    tools: historyTools, runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
   });
 
   // Persist the assistant row BEFORE streaming (pre-stream writes are reliable);

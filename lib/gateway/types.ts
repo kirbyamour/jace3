@@ -19,7 +19,8 @@ export type GenerateOptions = {
   signal?: AbortSignal;
   tools?: ToolDef[];         // native tool use (adapters may ignore)
   runTool?: ToolExecutor;    // executes a tool call, returns JSON string result
-  maxToolRounds?: number;    // default 3
+  maxToolRounds?: number;
+  webSearch?: boolean;       // provider-native web search, if the adapter supports it    // default 3
 };
 
 export type GenerateResult = {

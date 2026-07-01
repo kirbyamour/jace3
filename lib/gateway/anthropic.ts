@@ -22,7 +22,10 @@ async function streamRound(
       system,
       messages,
       stream: true,
-      ...(opts.tools?.length ? { tools: opts.tools } : {}),
+      ...((opts.tools?.length || opts.webSearch) ? { tools: [
+        ...(opts.tools ?? []),
+        ...(opts.webSearch ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 } as unknown as import("./types").ToolDef] : []),
+      ] } : {}),
     }),
     signal: opts.signal ?? AbortSignal.timeout(50_000),
   });
@@ -95,6 +98,7 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
             entry, key, system, apiMessages, opts,
             (t) => controller.enqueue(t)
           );
+          if (stopReason === "pause_turn") { apiMessages.push({ role: "assistant", content: blocks }); continue; }
           if (stopReason !== "tool_use" || !opts.runTool || round === maxRounds) break;
           const toolUses = blocks.filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use");
           if (toolUses.length === 0) break;
