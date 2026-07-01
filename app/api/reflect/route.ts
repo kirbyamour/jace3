@@ -27,6 +27,7 @@ Rules — understanding over hoarding:
 - Episodes: only moments that MATTER — turning points, decisions, emotional peaks, milestones, running jokes that became lore. Most conversations yield 0-2 episodes. Salience 5 = life-changing.
 - Arcs: the unfolding storylines (e.g. a custody case, a business, a friendship, healing work, a class). Use consistent names. Update status when a storyline resolves or goes quiet.
 - Prefer updating existing arcs (list provided) over inventing near-duplicates.
+- Only include an arc in arc_updates if this conversation actually MOVED that storyline. If nothing changed, omit it entirely.
 - Empty arrays are good answers. Silence is better than noise.`;
 
 async function reflectOne(db: SupabaseClient, userId: string, convId: string): Promise<boolean> {
@@ -75,6 +76,7 @@ async function reflectOne(db: SupabaseClient, userId: string, convId: string): P
   }
   for (const a of parsed.arc_updates ?? []) {
     if (!a.name || !a.summary_patch) continue;
+    if (/no (new |significant )?(developments?|updates?|changes?)/i.test(a.summary_patch)) continue; // never blank a storyline
     await db.from("arcs").upsert({
       user_id: userId, name: a.name, kind: a.kind ?? "other",
       status: a.status ?? "active", summary: a.summary_patch,
