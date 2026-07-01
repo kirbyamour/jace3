@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { supabaseServer } from "@/lib/supabase/server";
 import { generate } from "@/lib/gateway";
 import { buildSystemPrompt, trimRecent } from "@/lib/context/builder";
@@ -17,15 +17,19 @@ export async function POST(req: NextRequest) {
   }
 }
 
+async function lineage(db: SupabaseClient, leaf: string): Promise<ChatMessage[]> {
+  const { data, error } = await db.rpc("get_lineage", { leaf, max_rows: 80 });
+  if (error) { console.error("[jace-chat] lineage:", error); return []; }
+  return (data ?? []).map((r: { role: string; content: string }) => ({ role: r.role, content: r.content })) as ChatMessage[];
+}
+
 async function handleChat(req: NextRequest) {
   const cookieClient = supabaseServer();
   const [{ data: { user } }, { data: { session } }] = await Promise.all([
-    cookieClient.auth.getUser(),
-    cookieClient.auth.getSession(),
+    cookieClient.auth.getUser(), cookieClient.auth.getSession(),
   ]);
   if (!user || !session?.access_token) return new Response("unauthorized", { status: 401 });
 
-  // Token-pinned client: survives the whole stream without cookie/refresh machinery.
   const db = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -33,46 +37,53 @@ async function handleChat(req: NextRequest) {
       auth: { persistSession: false, autoRefreshToken: false } }
   );
 
-  const { conversationId: cidIn, content } = await req.json();
-  if (!content?.trim()) return new Response("empty", { status: 400 });
+  const body = await req.json();
+  const { conversationId: cidIn, content, parentId, regenerateOf } = body as {
+    conversationId?: string; content?: string; parentId?: string | null; regenerateOf?: string;
+  };
 
-  let conversationId: string = cidIn;
-  if (!conversationId) {
-    const { data, error } = await db
-      .from("conversations")
-      .insert({ user_id: user.id, title: content.slice(0, 48) })
-      .select("id").single();
-    if (error) { console.error("[jace-chat] conv insert:", error); return new Response(error.message, { status: 500 }); }
-    conversationId = data.id;
+  let conversationId = cidIn as string;
+  let userMsgId: string | null = null;
+  let history: ChatMessage[] = [];
+
+  if (regenerateOf) {
+    // Regenerate: new assistant sibling under the same user message. No user insert.
+    if (!conversationId) return new Response("missing conversation", { status: 400 });
+    userMsgId = regenerateOf;
+    history = await lineage(db, regenerateOf);
+  } else {
+    if (!content?.trim()) return new Response("empty", { status: 400 });
+    if (!conversationId) {
+      const { data, error } = await db
+        .from("conversations")
+        .insert({ user_id: user.id, title: content.slice(0, 48) })
+        .select("id").single();
+      if (error) { console.error("[jace-chat] conv insert:", error); return new Response(error.message, { status: 500 }); }
+      conversationId = data.id;
+    }
+    const { data: userRow, error: userInsErr } = await db.from("messages").insert({
+      conversation_id: conversationId, user_id: user.id, role: "user", content,
+      parent_id: parentId ?? null,
+    }).select("id").single();
+    if (userInsErr) { console.error("[jace-chat] user insert:", userInsErr); return new Response(userInsErr.message, { status: 500 }); }
+    userMsgId = userRow.id;
+    await db.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId);
+    history = await lineage(db, userMsgId!);
+    if (history.length === 0) history = [{ role: "user", content }];
   }
-
-  const { error: userInsErr } = await db.from("messages").insert({
-    conversation_id: conversationId, user_id: user.id, role: "user", content,
-  });
-  if (userInsErr) { console.error("[jace-chat] user msg insert:", userInsErr); return new Response(userInsErr.message, { status: 500 }); }
-  await db.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId);
-
-  const { data: history, error: histErr } = await db
-    .from("messages")
-    .select("role, content")
-    .eq("conversation_id", conversationId)
-    .order("created_at", { ascending: true })
-    .limit(80);
-  if (histErr) console.error("[jace-chat] history:", histErr);
 
   const { data: facts } = await db
     .from("profile_facts").select("key, value").eq("tombstoned", false).limit(50);
 
-  const recent = trimRecent((history ?? []) as ChatMessage[]);
+  const recent = trimRecent(history);
   const { system, personaVersion } = buildSystemPrompt({ recentMessages: recent, profileFacts: facts ?? [] });
-
   const { stream, modelId } = await generate(system, recent);
 
   const encoder = new TextEncoder();
   let full = "";
   const out = new ReadableStream({
     async start(controller) {
-      controller.enqueue(encoder.encode(`event: meta\ndata: ${JSON.stringify({ conversationId, modelId })}\n\n`));
+      controller.enqueue(encoder.encode(`event: meta\ndata: ${JSON.stringify({ conversationId, userMsgId, modelId })}\n\n`));
       const reader = stream.getReader();
       try {
         for (;;) {
@@ -84,16 +95,19 @@ async function handleChat(req: NextRequest) {
       } catch (e) {
         console.error("[jace-chat] stream error:", e);
       } finally {
+        let assistantId: string | null = null;
         try {
-          const { error } = await db.from("messages").insert({
+          const { data, error } = await db.from("messages").insert({
             conversation_id: conversationId, user_id: user.id, role: "assistant",
             content: full || "…", model_id: modelId, persona_version: personaVersion,
-          });
+            parent_id: userMsgId,
+          }).select("id").single();
           if (error) console.error("[jace-chat] assistant insert FAILED:", error);
+          else assistantId = data.id;
         } catch (e) {
           console.error("[jace-chat] assistant insert threw:", e);
         }
-        controller.enqueue(encoder.encode("event: done\ndata: {}\n\n"));
+        controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ assistantId })}\n\n`));
         controller.close();
       }
     },
