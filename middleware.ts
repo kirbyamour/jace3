@@ -9,7 +9,7 @@ export async function middleware(req: NextRequest) {
     {
       cookies: {
         getAll: () => req.cookies.getAll(),
-        setAll: (all) => {
+        setAll: (all: { name: string; value: string; options?: import("@supabase/ssr").CookieOptions }[]) => {
           all.forEach(({ name, value }) => req.cookies.set(name, value));
           res = NextResponse.next({ request: req });
           all.forEach(({ name, value, options }) => res.cookies.set(name, value, options));
