@@ -24,7 +24,7 @@ async function streamRound(
       stream: true,
       ...(opts.tools?.length ? { tools: opts.tools } : {}),
     }),
-    signal: opts.signal,
+    signal: opts.signal ?? AbortSignal.timeout(50_000),
   });
   if (!res.ok || !res.body) throw new Error(`anthropic ${res.status}: ${await res.text()}`);
 

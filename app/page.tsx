@@ -121,6 +121,10 @@ export default function Chat() {
       if (!res.ok || !res.body) throw new Error(await res.text());
       const reader = res.body.getReader();
       const dec = new TextDecoder();
+      let lastToken = Date.now();
+      const watchdog = setInterval(() => {
+        if (Date.now() - lastToken > 75000) { clearInterval(watchdog); abortRef.current?.abort(); }
+      }, 5000);
       let buf = ""; let acc = ""; let meta: { conversationId?: string; userMsgId?: string; assistantId?: string } = {};
       for (;;) {
         const { done, value } = await reader.read();
@@ -153,18 +157,22 @@ export default function Chat() {
             }
             continue;
           }
+          lastToken = Date.now();
           acc += JSON.parse(dataLine.slice(5));
           setMsgs((m) => m.map((x) => (x.id === localAsst.id ? { ...x, content: acc } : x)));
         }
       }
     } catch (e) {
       const aborted = e instanceof DOMException && e.name === "AbortError";
+      if (aborted && !streaming) { /* user stop */ }
       if (!aborted) {
         setMsgs((m) => m.map((x) => (x.id === localAsst.id
           ? { ...x, content: "Something glitched on my end, lovebug — say that again?" } : x)));
         console.error(e);
       }
     } finally {
+      // @ts-expect-error watchdog may be undeclared in some paths
+      try { clearInterval(watchdog); } catch {}
       setStreaming(false); loadConvs();
       const cid = (current ?? "") as string; if (cid) cache.current.delete(cid);
     }

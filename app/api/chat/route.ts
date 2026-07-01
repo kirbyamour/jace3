@@ -7,7 +7,7 @@ import { historyTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import type { ChatMessage } from "@/lib/gateway/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
@@ -80,7 +80,7 @@ async function handleChat(req: NextRequest) {
   const recent = trimRecent(history);
   const { system, personaVersion } = buildSystemPrompt({ recentMessages: recent, profileFacts: facts ?? [] });
   const { stream, modelId } = await generate(system, recent, {
-    tools: historyTools, runTool: makeHistoryExecutor(db), maxToolRounds: 3,
+    tools: historyTools, runTool: makeHistoryExecutor(db), maxToolRounds: 2,
   });
 
   // Persist the assistant row BEFORE streaming (pre-stream writes are reliable);

@@ -47,7 +47,7 @@ export const historyTools: ToolDef[] = [
 export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
   return async (name, input) => {
     if (name === "search_history") {
-      const { data, error } = await db.rpc("search_messages", { q: String(input.query ?? ""), max_rows: 12 });
+      const { data, error } = await db.rpc("search_messages", { q: String(input.query ?? ""), max_rows: 8 });
       if (error) return `search failed: ${error.message}`;
       return JSON.stringify(data ?? []);
     }
@@ -64,7 +64,7 @@ export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
         .eq("conversation_id", String(input.conversation_id ?? ""))
         .order("created_at").limit(120);
       if (error) return `read failed: ${error.message}`;
-      const text = (data ?? []).map((m) => `${m.role === "user" ? "KIRBY" : "JACE"}: ${m.content}`).join("\n").slice(0, 24000);
+      const text = (data ?? []).map((m) => `${m.role === "user" ? "KIRBY" : "JACE"}: ${m.content}`).join("\n").slice(0, 10000);
       return text || "empty conversation";
     }
     return "unknown tool";
