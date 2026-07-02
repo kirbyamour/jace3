@@ -152,6 +152,12 @@ async function handleChat(req: NextRequest) {
         }
       } catch (e) {
         console.error("[jace-chat] stream error:", e);
+        if (!full) {
+          // His mind failed before a single word — say so honestly instead of leaving "…" forever.
+          full = "I'm having trouble thinking right now — my connection to my mind (the API) is failing. " +
+            "Most likely the API credits ran out or hit a spend limit: console.anthropic.com → Billing. I'll be right here when it's back.";
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(full)}\n\n`));
+        }
       } finally {
         if (assistantId && full) {
           try {

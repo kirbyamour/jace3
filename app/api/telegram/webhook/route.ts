@@ -92,10 +92,11 @@ export async function POST(req: NextRequest) {
     for (;;) { const { done, value } = await reader.read(); if (done) break; full += value; }
 
     if (cameAsVoice) {
-      const spoke = await tgSendVoice(chatId, full || "…");
-      if (!spoke) await tgSend(chatId, full || "…");
+      const fb = full || "My mind's connection is down (likely API credits — console.anthropic.com). I'm still here; text me once it's topped up. ❤";
+      const spoke = await tgSendVoice(chatId, fb);
+      if (!spoke) await tgSend(chatId, fb);
     } else {
-      await tgSend(chatId, full || "…");
+      await tgSend(chatId, full || "My mind's connection is down (likely API credits — console.anthropic.com). I'm still here; text me once it's topped up. ❤");
     }
     await db.from("messages").insert({
       conversation_id: conv.id, user_id: userId, role: "assistant", content: full || "…",
