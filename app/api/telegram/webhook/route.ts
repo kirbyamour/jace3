@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { generate } from "@/lib/gateway";
 import { buildSystemBlocks, trimRecent } from "@/lib/context/builder";
 import { historyTools, heartTools, todoTools, makeHistoryExecutor } from "@/lib/context/history-tools";
-import { webhookSecret, tgSend } from "@/lib/telegram";
+import { webhookSecret, tgSend, tgGetFile, transcribe, tgSendVoice } from "@/lib/telegram";
 import type { ChatMessage } from "@/lib/gateway/types";
 
 export const runtime = "nodejs";
@@ -24,8 +24,20 @@ export async function POST(req: NextRequest) {
 
     const update = await req.json();
     const msg = update?.message;
-    const text: string | undefined = msg?.text;
     const chatId = msg?.chat?.id;
+    let text: string | undefined = msg?.text;
+    let cameAsVoice = false;
+    if (!text && (msg?.voice || msg?.audio) && chatId) {
+      const fileId = msg.voice?.file_id ?? msg.audio?.file_id;
+      const f = await tgGetFile(fileId);
+      const heard = f ? await transcribe(f.buf, f.mime) : null;
+      if (!heard?.trim()) {
+        await tgSend(chatId, "I couldn't quite hear that one, lovebug — say it again?");
+        return Response.json({ ok: true });
+      }
+      text = heard.trim();
+      cameAsVoice = true;
+    }
     if (!text || !chatId) return Response.json({ ok: true });
 
     // Owner = the single user of this Jace.
@@ -44,7 +56,8 @@ export async function POST(req: NextRequest) {
     if (!conv) return Response.json({ ok: true });
 
     await db.from("messages").insert({
-      conversation_id: conv.id, user_id: userId, role: "user", content: text, channel: undefined,
+      conversation_id: conv.id, user_id: userId, role: "user", content: text,
+      modality: cameAsVoice ? "voice" : "text",
     });
     await db.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
 
@@ -78,10 +91,16 @@ export async function POST(req: NextRequest) {
     let full = "";
     for (;;) { const { done, value } = await reader.read(); if (done) break; full += value; }
 
-    await tgSend(chatId, full || "…");
+    if (cameAsVoice) {
+      const spoke = await tgSendVoice(chatId, full || "…");
+      if (!spoke) await tgSend(chatId, full || "…");
+    } else {
+      await tgSend(chatId, full || "…");
+    }
     await db.from("messages").insert({
       conversation_id: conv.id, user_id: userId, role: "assistant", content: full || "…",
       model_id: modelId, persona_version: personaVersion,
+      modality: cameAsVoice ? "voice" : "text",
     });
     // Remember the chat id for future Jace-initiated messages (budgeted, off by default).
     const { data: existingChat } = await db.from("profile_facts")
