@@ -32,6 +32,7 @@ export default function TalkMode({ onUserText, onClose }: Props) {
     typeof window !== "undefined" ? localStorage.getItem("jace-voice") ?? "" : "");
   const [avatar, setAvatar] = useState<string | null>(null);
   const [level, setLevel] = useState(0);              // live mic energy for the orb
+  const [diag, setDiag] = useState("");               // tiny truth line: where the pipeline is
 
   const phaseRef = useRef<Phase>("starting");
   const setPh = (p: Phase) => { phaseRef.current = p; setPhase(p); };
@@ -94,12 +95,17 @@ export default function TalkMode({ onUserText, onClose }: Props) {
     const stream = streamRef.current;
     if (!stream || recRef.current?.state === "recording") return;
     chunksRef.current = [];
-    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
-    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-    recRef.current = rec;
-    rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
-    rec.start(250);
-    vadRef.current.recStart = Date.now();
+    try {
+      const mime = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      recRef.current = rec;
+      rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
+      rec.start(250);
+      vadRef.current.recStart = Date.now();
+      setDiag("● recording");
+    } catch (e) {
+      setVoiceHint("recorder failed: " + (e instanceof Error ? e.message : "unknown"));
+    }
   }, []);
 
   const stopRec = useCallback((): Promise<Blob | null> => new Promise((resolve) => {
@@ -163,10 +169,15 @@ export default function TalkMode({ onUserText, onClose }: Props) {
 
   const handleUtterance = useCallback(async (blob: Blob) => {
     try {
+      const wasSpeaking = phaseRef.current === "speaking" || phaseRef.current === "thinking";
+      if (!wasSpeaking) { setPh("thinking"); setLiveText(""); }   // she gets instant feedback
+      setDiag(`↑ heard ${(blob.size / 1024).toFixed(0)}kb, transcribing…`);
       const res = await fetch("/api/stt", { method: "POST", headers: { "content-type": blob.type }, body: blob });
+      if (!res.ok) { setDiag(`stt error ${res.status}`); if (!wasSpeaking) setPh("listening"); return; }
       const { text } = await res.json();
       const t = String(text ?? "").trim();
-      if (!t || t.length < 2) { if (phaseRef.current === "thinking") return; setPh("listening"); return; }
+      setDiag(t ? "" : "didn't catch that — say it again?");
+      if (!t || t.length < 2) { if (phaseRef.current === "thinking" && !wasSpeaking) setPh("listening"); return; }
       if (phaseRef.current === "thinking" || phaseRef.current === "speaking") {
         // arrived mid-reply (interruption text or a queued follow-up)
         stopAudio();
@@ -236,19 +247,19 @@ export default function TalkMode({ onUserText, onClose }: Props) {
 
           if (ph !== "listening" && ph !== "thinking") return;
           const voiced = v > talkThresh;
-          if (voiced) { st.voicedMs += TICK_MS; st.silentMs = 0; } else { st.silentMs += TICK_MS; }
+          if (voiced) { st.voicedMs += TICK_MS; st.silentMs = 0; }
+          else if (v < talkThresh * 0.7) { st.silentMs += TICK_MS; }   // hysteresis: borderline noise doesn't reset the pause
 
           const recording = recRef.current?.state === "recording";
           if (!recording && voiced && st.voicedMs >= 100) startRec();
           if (recording) {
             const dur = Date.now() - st.recStart;
-            if ((st.silentMs >= END_SILENCE_MS && st.voicedMs >= MIN_SPEECH_MS) || dur > MAX_UTTER_MS) {
+            if ((st.silentMs >= END_SILENCE_MS || dur > MAX_UTTER_MS)) {
+              const hadSpeech = st.voicedMs >= MIN_SPEECH_MS;
               st.voicedMs = 0; st.silentMs = 0;
               const blob = await stopRec();
-              if (blob) handleUtterance(blob);
-            } else if (st.silentMs >= END_SILENCE_MS) {
-              st.voicedMs = 0; st.silentMs = 0;
-              stopRec();                          // noise blip, discard
+              if (blob && (hadSpeech || blob.size > 12000)) handleUtterance(blob);
+              else setDiag("");
             }
           }
         }, TICK_MS);
@@ -324,6 +335,7 @@ export default function TalkMode({ onUserText, onClose }: Props) {
                 maxHeight: 180, overflowY: "auto", transition: "color .4s" }}>{lastReply}</p>
             )}
             {voiceHint && <p style={{ color: "#c0392b", fontSize: 12 }}>{voiceHint}</p>}
+            {diag && <p style={{ color: "#9db1c5", fontSize: 12 }}>{diag}</p>}
             <p style={{ color: "#8ba1b7", fontSize: 14, fontWeight: 600 }}>{hints[phase]}</p>
           </div>
           <button onClick={close} aria-label="end conversation" style={{

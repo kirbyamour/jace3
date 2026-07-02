@@ -46,7 +46,8 @@ export async function transcribe(buf: ArrayBuffer, mime: string): Promise<string
   const key = process.env.ELEVENLABS_API_KEY;
   if (!key) return null;
   const form = new FormData();
-  form.append("file", new Blob([buf], { type: mime }), "voice.ogg");
+  const ext = mime.includes("mp4") ? "m4a" : mime.includes("webm") ? "webm" : mime.includes("mpeg") ? "mp3" : mime.includes("wav") ? "wav" : "ogg";
+  form.append("file", new Blob([buf], { type: mime }), `voice.${ext}`);
   form.append("model_id", "scribe_v1");
   const res = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
     method: "POST", headers: { "xi-api-key": key }, body: form,
