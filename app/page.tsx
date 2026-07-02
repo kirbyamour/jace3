@@ -124,7 +124,7 @@ export default function Chat() {
     if (current) localStorage.setItem(`branch-${current}`, JSON.stringify(next));
   }
 
-  async function runStream(body: Record<string, unknown>, placeholderParent: string | null): Promise<string> {
+  async function runStream(body: Record<string, unknown>, placeholderParent: string | null, onDelta?: (full: string) => void): Promise<string> {
     let finalText = "";
     setStreaming(true); setStick(true);
     const localAsst: Msg = { id: `local-a-${Date.now()}`, role: "assistant", content: "",
@@ -177,7 +177,7 @@ export default function Chat() {
             continue;
           }
           lastToken = Date.now();
-          acc += JSON.parse(dataLine.slice(5)); finalText = acc;
+          acc += JSON.parse(dataLine.slice(5)); finalText = acc; onDelta?.(acc);
           setMsgs((m) => m.map((x) => (x.id === localAsst.id ? { ...x, content: acc } : x)));
         }
       }
@@ -226,13 +226,13 @@ export default function Chat() {
     await runStream({ conversationId: current, regenerateOf: assistantMsg.parent_id }, assistantMsg.parent_id);
   }
 
-  async function voiceTurn(text: string): Promise<string> {
+  async function voiceTurn(text: string, onDelta?: (full: string) => void): Promise<string> {
     const parentId = visible.length ? visible[visible.length - 1].id : null;
     const realParent = parentId && !parentId.startsWith("local-") ? parentId : null;
     const localUser: Msg = { id: `local-u-${Date.now()}`, role: "user", content: text,
       parent_id: realParent, created_at: new Date().toISOString() };
     setMsgs((m) => [...m, localUser]);
-    return await runStream({ conversationId: current, content: text, parentId: realParent, voiceMode: true }, null);
+    return await runStream({ conversationId: current, content: text, parentId: realParent, voiceMode: true }, null, onDelta);
   }
 
   function stop() { abortRef.current?.abort(); setStreaming(false); }
@@ -312,6 +312,7 @@ export default function Chat() {
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/heartbeat">♥ Heartbeat</a>
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/timeline">⧗ Timeline</a>
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/journal">✎ Journal</a>
+          <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/settings">⚙ Settings</a>
         </div>
         <div className="convlist" onClick={() => setMenuFor(null)}>
           {convs.map((c) => {

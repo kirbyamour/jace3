@@ -1,9 +1,10 @@
 "use client";
-// Talk Mode — still Jace, out loud. One thread, one mind. (Vision doc: Native Voice.)
+// Talk Mode — still Jace, out loud. Sentence-streamed speech: he starts talking
+// on his first finished sentence while the rest is still forming.
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type Props = {
-  onUserText: (text: string, viaVoice: boolean) => Promise<string>; // returns Jace's reply text
+  onUserText: (text: string, onDelta?: (full: string) => void) => Promise<string>;
   onClose: () => void;
 };
 
@@ -13,65 +14,104 @@ export default function TalkMode({ onUserText, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>("listening");
   const [liveText, setLiveText] = useState("");
   const [lastReply, setLastReply] = useState("");
-  const [supported, setSupported] = useState(true);
-  const recRef = useRef<any>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const closingRef = useRef(false);
-  const phaseRef = useRef<Phase>("listening");
-  phaseRef.current = phase;
-
-  const stopAudio = useCallback(() => {
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
-  }, []);
-
   const [voiceHint, setVoiceHint] = useState("");
+  const [supported, setSupported] = useState(true);
   const [voices, setVoices] = useState<{ name: string; category?: string }[]>([]);
   const [voiceName, setVoiceName] = useState<string>(() =>
     typeof window !== "undefined" ? localStorage.getItem("jace-voice") ?? "" : "");
+  const recRef = useRef<any>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const closingRef = useRef(false);
+  const bargeRef = useRef(false);
+  const phaseRef = useRef<Phase>("listening");
+  phaseRef.current = phase;
+
   useEffect(() => {
     fetch("/api/tts").then((r) => r.json())
       .then((d) => setVoices((d.voices ?? []).map((v: { name: string; category?: string }) => ({ name: v.name, category: v.category }))))
       .catch(() => {});
   }, []);
-  const speak = useCallback(async (text: string) => {
-    setPhase("speaking");
+
+  const stopAudio = useCallback(() => {
+    bargeRef.current = true;
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+  }, []);
+
+  const fetchSentenceAudio = useCallback(async (sentence: string): Promise<Blob | null> => {
     try {
       const res = await fetch("/api/tts", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text, voiceName: localStorage.getItem("jace-voice") || undefined }),
+        body: JSON.stringify({ text: sentence, voiceName: localStorage.getItem("jace-voice") || undefined }),
       });
-      if (!res.ok) { console.error("[talk] tts:", await res.text()); setVoiceHint("voice hiccup — words on screen"); throw new Error("tts unavailable"); }
+      if (!res.ok) { console.error("[talk] tts:", await res.text()); setVoiceHint("voice hiccup — words on screen"); return null; }
       setVoiceHint("");
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      await new Promise<void>((resolve) => {
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.onended = () => resolve();
-        audio.onerror = () => resolve();
-        audio.play().catch(() => resolve());
-      });
-      URL.revokeObjectURL(url);
-    } catch {
-      // No TTS available — the text is on screen; stay in conversation.
-    }
-    if (!closingRef.current) setPhase("listening");
+      return await res.blob();
+    } catch { return null; }
   }, []);
+
+  const playBlob = useCallback((blob: Blob) => new Promise<void>((resolve) => {
+    if (bargeRef.current) { resolve(); return; }
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audioRef.current = audio;
+    audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+    audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+    audio.play().catch(() => resolve());
+  }), []);
 
   const handleFinal = useCallback(async (text: string) => {
     if (!text.trim() || phaseRef.current === "thinking") return;
     stopAudio();
-    setPhase("thinking"); setLiveText(text);
+    bargeRef.current = false;
+    setPhase("thinking"); setLiveText(text); setLastReply("");
+
+    // Sentence pipeline: extract finished sentences from the growing reply,
+    // fetch audio ahead (prefetch), play sequentially.
+    let spokenChars = 0;
+    const queue: string[] = [];
+    let playing = false;
+    const pump = async () => {
+      if (playing) return;
+      playing = true;
+      while (queue.length > 0 && !bargeRef.current && !closingRef.current) {
+        const sentence = queue.shift()!;
+        const nextPrefetch = queue.length > 0 ? fetchSentenceAudio(queue[0]) : null; // warm the next one
+        const blob = await fetchSentenceAudio(sentence);
+        if (phaseRef.current !== "speaking" && !bargeRef.current) setPhase("speaking");
+        if (blob) await playBlob(blob);
+        if (nextPrefetch) await nextPrefetch.catch(() => null);
+      }
+      playing = false;
+    };
+    const onDelta = (full: string) => {
+      setLastReply(full);
+      const unspoken = full.slice(spokenChars);
+      const m = unspoken.match(/^[\s\S]*?[.!?…](?=\s|$)/);
+      if (m && m[0].trim().length > 1) {
+        spokenChars += m[0].length;
+        queue.push(m[0].trim());
+        pump();
+      }
+    };
+
     try {
-      const reply = await onUserText(text, true);
-      setLastReply(reply); setLiveText("");
-      await speak(reply);
+      const reply = await onUserText(text, onDelta);
+      setLiveText("");
+      const tail = reply.slice(spokenChars).trim();
+      if (tail) { queue.push(tail); pump(); }
+      // wait for the queue to drain
+      while ((queue.length > 0 || playing) && !bargeRef.current && !closingRef.current) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      setLastReply(reply);
     } catch {
       setPhase("recovering");
       setLastReply("Looks like we lost each other for a second — I was following. Pick up wherever you want.");
       setTimeout(() => !closingRef.current && setPhase("listening"), 1500);
+      return;
     }
-  }, [onUserText, speak, stopAudio]);
+    if (!closingRef.current) setPhase("listening");
+  }, [onUserText, fetchSentenceAudio, playBlob, stopAudio]);
 
   useEffect(() => {
     const SR = (window as any).webkitSpeechRecognition ?? (window as any).SpeechRecognition;
@@ -86,8 +126,7 @@ export default function TalkMode({ onUserText, onClose }: Props) {
     let silenceTimer: ReturnType<typeof setTimeout> | null = null;
 
     rec.onresult = (e: any) => {
-      // Barge-in: her voice interrupts his.
-      if (phaseRef.current === "speaking") { stopAudio(); setPhase("listening"); }
+      if (phaseRef.current === "speaking") { stopAudio(); setPhase("listening"); } // barge-in
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
@@ -100,7 +139,7 @@ export default function TalkMode({ onUserText, onClose }: Props) {
         const text = finalBuf.trim();
         finalBuf = "";
         if (text) handleFinal(text);
-      }, 1100); // natural pause = end of turn
+      }, 900);
     };
     rec.onend = () => { if (!stopped && !closingRef.current) { try { rec.start(); } catch { /* busy */ } } };
     rec.onerror = () => { /* onend restarts */ };
@@ -157,7 +196,7 @@ export default function TalkMode({ onUserText, onClose }: Props) {
               onChange={(e) => { setVoiceName(e.target.value); localStorage.setItem("jace-voice", e.target.value); }}
               style={{ marginTop: 10, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line)",
                 background: "var(--bg)", color: "var(--ink-soft)", fontSize: 13 }}>
-              <option value="">Voice: automatic (his cloned voice)</option>
+              <option value="">Voice: automatic</option>
               {voices.map((v) => (
                 <option key={v.name} value={v.name}>{v.name}{v.category === "premade" ? "" : ` (${v.category})`}</option>
               ))}
