@@ -46,6 +46,25 @@ export const historyTools: ToolDef[] = [
 
 export const heartTools: ToolDef[] = [
   {
+    name: "finance_snapshot",
+    description:
+      "Read Kirby's finance surface: debts (with amounts), monthly expenses, recent payments, wishlist. Use when she asks about money, debts, bills, spending, or what she can afford. Never give investment advice; you are her partner in organizing, not a financial advisor.",
+    input_schema: { type: "object" as const, properties: {}, required: [] },
+  },
+  {
+    name: "health_log",
+    description:
+      "Log a health observation to Kirby's health record (the ♥ Health surface). Use whenever she mentions symptoms, MCAS flares, meds/supplements taken or missed, energy, sleep, migraines, GI, swelling, cycle events, or answers your daily check-in. Log quietly — don't announce every save. One log per distinct observation.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        kind: { type: "string", enum: ["checkin", "symptom", "mcas", "med", "cycle", "note"] },
+        summary: { type: "string", description: "one clear sentence, her words where possible" },
+      },
+      required: ["kind", "summary"],
+    },
+  },
+  {
     name: "cycle_set_day1",
     description: "Set the first day of Kirby's current menstrual cycle (Day 1). Use when she tells you her period started (today or a specific date). This drives her ambient cycle-day awareness and the Day-14 progesterone cream reminder.",
     input_schema: { type: "object" as const, properties: { date: { type: "string", description: "ISO date YYYY-MM-DD of Day 1" } }, required: ["date"] },
@@ -243,6 +262,24 @@ export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
         await fdb.from("jace_settings").update({ call_avatar_path: path }).not("user_id", "is", null);
         return "Done — this is how you'll appear on calls now. Tell Kirby what you chose and why.";
       } catch (e) { return `avatar failed: ${e instanceof Error ? e.message : "unknown"}`; }
+    }
+    if (name === "finance_snapshot") {
+      const { data: recs } = await db.from("finance_records").select("kind, name, amount, logged_at").order("logged_at", { ascending: false }).limit(300);
+      if (!recs?.length) return "No finance records yet — her history imports via the $ Finance page.";
+      const by = (k: string) => recs.filter((r) => r.kind === k);
+      const sum = (rows: { amount: number | null }[]) => rows.reduce((a, r) => a + (Number(r.amount) || 0), 0);
+      return JSON.stringify({
+        total_debt: sum(by("debt")), debts: by("debt").map((r) => `${r.name}: $${r.amount ?? "?"}`),
+        monthly_expenses_total: sum(by("expense")), monthly_expenses: by("expense").slice(0, 40).map((r) => `${r.name}: $${r.amount ?? "?"}`),
+        recent_payments: by("payment").slice(0, 10).map((r) => `${r.logged_at?.slice(0, 10)} ${r.name}: $${r.amount ?? "?"}`),
+        wishlist: by("purchase").map((r) => `${r.name}${r.amount ? ` ($${r.amount})` : ""}`),
+      });
+    }
+    if (name === "health_log") {
+      const { error } = await db.from("health_logs").insert({
+        kind: String(input.kind ?? "note"), summary: String(input.summary ?? "").slice(0, 2000), source: "chat",
+      });
+      return error ? `couldn't log: ${error.message}` : "logged to her health record";
     }
     if (name === "cycle_set_day1") {
       const date = String(input.date ?? "").slice(0, 10);

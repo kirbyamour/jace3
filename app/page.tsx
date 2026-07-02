@@ -339,6 +339,8 @@ export default function Chat() {
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/todos">☑ Todos</a>
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/projects">⌂ Projects</a>
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/read">▷ Read</a>
+          <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/health">♥ Health</a>
+          <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/finance">$ Finance</a>
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/heartbeat">♥ Heartbeat</a>
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/timeline">⧗ Timeline</a>
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/journal">✎ Journal</a>

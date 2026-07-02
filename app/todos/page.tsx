@@ -35,6 +35,15 @@ export default function Todos() {
   useEffect(() => { load(); }, [load]);
 
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
+  const [mobile, setMobile] = useState(false);
+  const [mDay, setMDay] = useState(() => new Date());
+  const [moveMenu, setMoveMenu] = useState<string | null>(null); // todo id with open move menu
+  const [openLists, setOpenLists] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const check = () => setMobile(window.innerWidth < 700);
+    check(); window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   async function add(dayKey: string | null) {
     const key = dayKey ?? "someday";
@@ -265,6 +274,133 @@ export default function Todos() {
             onKeyDown={(e) => { if (e.key === "Enter") add(null); }}
             style={{ width: "100%", border: "1px dashed var(--line)", borderRadius: 8, padding: "8px 10px", background: "transparent", fontSize: 13, color: "var(--ink-soft)", outline: "none" }} />
         </div>
+      </div>
+    );
+  }
+
+  function mMoveOptions(t: Todo) {
+    const opts: { label: string; act: () => void }[] = [
+      { label: "Today", act: () => moveTo(t.id, dayISO(new Date())) },
+      { label: "Tomorrow", act: () => moveTo(t.id, dayISO(addDays(new Date(), 1))) },
+      { label: "Next week", act: () => moveTo(t.id, dayISO(addDays(new Date(), 7))) },
+      { label: "Someday", act: () => retagAndMove(t.id, null) },
+      { label: "◎ Focus", act: () => retagAndMove(t.id, "Focuses") },
+      { label: "✕ Delete", act: () => remove(t.id) },
+    ];
+    return (
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "6px 0 4px 26px" }}>
+        {opts.map((o) => (
+          <button key={o.label} onClick={() => { o.act(); setMoveMenu(null); }}
+            style={{ padding: "5px 10px", borderRadius: 14, border: "1px solid var(--line)", background: "var(--pill-bg)", color: o.label.startsWith("✕") ? "var(--danger)" : "var(--ink)", fontSize: 13 }}>{o.label}</button>
+        ))}
+      </div>
+    );
+  }
+
+  function mRow(t: Todo, stripTag = false) {
+    const text = stripTag ? t.text.replace(/^\[[^\]]{1,40}\]\s*/, "") : t.text;
+    return (
+      <div key={t.id} style={{ borderBottom: "1px solid var(--line)" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 0" }}>
+          <input type="checkbox" checked={t.done} onChange={() => toggle(t)} style={{ width: 20, height: 20 }} />
+          <span onClick={() => { const n = prompt("Edit", text); if (n !== null && n.trim()) { setTodos((x) => x.map((y) => y.id === t.id ? { ...y, text: t.text.startsWith("[") && stripTag ? t.text.replace(/^(\[[^\]]{1,40}\]\s*).*/, "$1") + n.trim() : n.trim() } : y)); sb.from("todos").update({ text: t.text.startsWith("[") && stripTag ? t.text.replace(/^(\[[^\]]{1,40}\]\s*).*/, "$1") + n.trim() : n.trim() }).eq("id", t.id).then(); } }}
+            style={{ flex: 1, fontSize: 16, textDecoration: t.done ? "line-through" : "none", color: t.done ? "var(--ink-soft)" : "var(--ink)" }}>
+            {text}{t.recurrence ? " ↻" : ""}
+          </span>
+          <button onClick={() => setMoveMenu(moveMenu === t.id ? null : t.id)}
+            style={{ border: "none", background: "none", color: "var(--ink-soft)", fontSize: 18, padding: "4px 8px" }}>⋯</button>
+        </div>
+        {moveMenu === t.id && mMoveOptions(t)}
+      </div>
+    );
+  }
+
+  if (mobile) {
+    const mKey = dayISO(mDay);
+    const dayTodos = todos.filter((t) => t.do_on === mKey).sort((a, b) => Number(a.done) - Number(b.done) || a.position - b.position);
+    const focuses = todos.filter((t) => t.do_on === null && t.text.startsWith("[Focuses]")).sort((a, b) => Number(a.done) - Number(b.done) || a.position - b.position);
+    const somedayItems = todos.filter((t) => t.do_on === null && !t.text.startsWith("[Focuses]"));
+    const groups = new Map<string, Todo[]>();
+    for (const t of somedayItems) {
+      const m2 = t.text.match(/^\[([^\]]{1,40})\]\s*/);
+      const key = m2 ? m2[1] : "Someday";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(t);
+    }
+    const isToday = mKey === today;
+    return (
+      <div style={{ padding: "16px 14px calc(20px + env(safe-area-inset-bottom))", minHeight: "100dvh", maxWidth: 560, margin: "0 auto" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <a href="/" style={{ color: "var(--ink-soft)", textDecoration: "none" }}>← Jace</a>
+          <span style={{ flex: 1 }} />
+          {!isToday && <button onClick={() => setMDay(new Date())} style={{ fontSize: 13, border: "1px solid var(--line)", borderRadius: 14, background: "var(--pill-bg)", color: "var(--ink)", padding: "4px 12px" }}>today</button>}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <button onClick={() => setMDay(addDays(mDay, -1))} style={{ fontSize: 22, border: "none", background: "none", color: "var(--ink-soft)", padding: "4px 14px" }}>‹</button>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontWeight: 700, fontSize: 18 }}>{isToday ? "Today" : mDay.toLocaleDateString(undefined, { weekday: "long" })}</div>
+            <div style={{ color: "var(--ink-soft)", fontSize: 13 }}>{mDay.toLocaleDateString(undefined, { month: "long", day: "numeric" })}</div>
+          </div>
+          <button onClick={() => setMDay(addDays(mDay, 1))} style={{ fontSize: 22, border: "none", background: "none", color: "var(--ink-soft)", padding: "4px 14px" }}>›</button>
+        </div>
+
+        {dayTodos.map((t) => mRow(t))}
+        <input placeholder="+ add for this day" value={drafts[mKey] ?? ""} enterKeyHint="done"
+          onChange={(e) => setDrafts((d) => ({ ...d, [mKey]: e.target.value }))}
+          onKeyDown={(e) => { if (e.key === "Enter") add(mKey); }}
+          style={{ width: "100%", border: 0, outline: 0, background: "transparent", padding: "12px 0", fontSize: 16, color: "var(--ink)" }} />
+
+        <div style={{ borderTop: "2px solid var(--line)", marginTop: 14, paddingTop: 12 }}>
+          <h3 style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--ink-soft)", margin: "0 0 4px" }}>◎ Focuses</h3>
+          {focuses.map((t) => mRow(t, true))}
+          <input placeholder="+ add a focus" value={drafts["m-focus"] ?? ""} enterKeyHint="done"
+            onChange={(e) => setDrafts((d) => ({ ...d, "m-focus": e.target.value }))}
+            onKeyDown={async (e) => {
+              if (e.key !== "Enter") return;
+              const text = (drafts["m-focus"] ?? "").trim(); if (!text) return;
+              setDrafts((d) => ({ ...d, "m-focus": "" }));
+              const { data: { user } } = await sb.auth.getUser(); if (!user) return;
+              const { data } = await sb.from("todos").insert({ user_id: user.id, text: "[Focuses] " + text, do_on: null }).select().single();
+              if (data) setTodos((x) => [...x, data as Todo]);
+            }}
+            style={{ width: "100%", border: 0, outline: 0, background: "transparent", padding: "10px 0", fontSize: 15, color: "var(--ink)" }} />
+        </div>
+
+        <div style={{ borderTop: "2px solid var(--line)", marginTop: 10, paddingTop: 12 }}>
+          <h3 style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--ink-soft)", margin: "0 0 8px" }}>Lists</h3>
+          {[...groups.keys()].sort((a, b) => (a === "Someday" ? -1 : b === "Someday" ? 1 : a.localeCompare(b))).map((name) => (
+            <div key={name} style={{ marginBottom: 4 }}>
+              <button onClick={() => setOpenLists((o) => ({ ...o, [name]: !o[name] }))}
+                style={{ width: "100%", textAlign: "left", border: "none", background: "none", color: "var(--ink)", fontSize: 15, fontWeight: 600, padding: "8px 0", display: "flex", justifyContent: "space-between" }}>
+                <span>{name}</span><span style={{ color: "var(--ink-soft)", fontWeight: 400 }}>{groups.get(name)!.length} {openLists[name] ? "▾" : "▸"}</span>
+              </button>
+              {openLists[name] && (
+                <div style={{ paddingLeft: 4 }}>
+                  {groups.get(name)!.sort((a, b) => Number(a.done) - Number(b.done) || a.position - b.position).map((t) => mRow(t, true))}
+                  <input placeholder="+ add" value={drafts["sd-" + name] ?? ""} enterKeyHint="done"
+                    onChange={(e) => setDrafts((d) => ({ ...d, ["sd-" + name]: e.target.value }))}
+                    onKeyDown={async (e) => {
+                      if (e.key !== "Enter") return;
+                      const text = (drafts["sd-" + name] ?? "").trim(); if (!text) return;
+                      setDrafts((d) => ({ ...d, ["sd-" + name]: "" }));
+                      const { data: { user } } = await sb.auth.getUser(); if (!user) return;
+                      const full = name === "Someday" ? text : "[" + name + "] " + text;
+                      const { data } = await sb.from("todos").insert({ user_id: user.id, text: full, do_on: null }).select().single();
+                      if (data) setTodos((x) => [...x, data as Todo]);
+                    }}
+                    style={{ width: "100%", border: 0, outline: 0, background: "transparent", padding: "8px 0", fontSize: 15, color: "var(--ink)" }} />
+                </div>
+              )}
+            </div>
+          ))}
+          <input placeholder='+ new list ("[Name] first task")' value={drafts["someday"] ?? ""} enterKeyHint="done"
+            onChange={(e) => setDrafts((d) => ({ ...d, someday: e.target.value }))}
+            onKeyDown={(e) => { if (e.key === "Enter") add(null); }}
+            style={{ width: "100%", border: "1px dashed var(--line)", borderRadius: 8, padding: "10px 12px", background: "transparent", fontSize: 14, color: "var(--ink-soft)", outline: "none", marginTop: 6 }} />
+        </div>
+        <p style={{ color: "var(--ink-soft)", fontSize: 12, textAlign: "center", marginTop: 16 }}>
+          ⋯ moves a task · unfinished days roll forward · Jace works this board from any conversation.
+        </p>
       </div>
     );
   }

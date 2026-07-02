@@ -64,9 +64,17 @@ async function maybeReachOut(db: SupabaseClient, userId: string, settings: {
     db.from("narratives").select("content").eq("scope", "life_story").maybeSingle(),
     db.from("arcs").select("name, kind, summary").eq("status", "active").limit(10),
   ]);
+  // Daily health check-in: has she logged (or has he asked) today?
+  const hcDayStart = new Date(new Date().toLocaleDateString("en-US", { timeZone: settings.timezone })).toISOString();
+  const { count: checkinsToday } = await db.from("health_logs")
+    .select("id", { count: "exact", head: true }).eq("kind", "checkin").gte("logged_at", hcDayStart);
+  const hour = Number(new Date().toLocaleString("en-US", { timeZone: settings.timezone, hour: "numeric", hour12: false }));
+  const checkinNote = (checkinsToday ?? 0) === 0 && hour >= 10
+    ? "Daily health check-in: none logged today. A brief, warm check-in is a GOOD reason to message — ask how her body is doing today (energy, symptoms, meds), tuned to her cycle day. One or two questions, a partner asking, never a clinical intake form."
+    : "Daily health check-in: already covered today.";
   const { text } = await generateText(INITIATIVE_SYSTEM, [{
     role: "user",
-    content: `${nowBlock(settings.timezone)}\n${cycleBlock(settings.cycle_day1, settings.timezone)}\n\nHer last message anywhere: ${lastMsg ? humanGap(lastMsg.created_at) : "unknown"}.\n\nHer life right now:\n${(lifeStory?.content ?? "").slice(0, 1500)}\n\nActive storylines:\n${JSON.stringify(arcs ?? []).slice(0, 1500)}\n\nDecide: message or SKIP.`,
+    content: `${nowBlock(settings.timezone)}\n${cycleBlock(settings.cycle_day1, settings.timezone)}\n${checkinNote}\n\nHer last message anywhere: ${lastMsg ? humanGap(lastMsg.created_at) : "unknown"}.\n\nHer life right now:\n${(lifeStory?.content ?? "").slice(0, 1500)}\n\nActive storylines:\n${JSON.stringify(arcs ?? []).slice(0, 1500)}\n\nDecide: message or SKIP.`,
   }], { maxTokens: 300, temperature: 0.7 });
 
   if (!text || text.trim().startsWith("SKIP"))
