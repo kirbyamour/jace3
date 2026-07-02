@@ -111,7 +111,13 @@ export default function Chat() {
     }
   }, [reflectSoon]);
 
-  const { visible, siblings } = useMemo(() => buildThread(msgs, overrides), [msgs, overrides]);
+  const { visible, siblings } = useMemo(() => {
+    const t = buildThread(msgs, overrides);
+    // Optimistic messages must never blink out while the server assigns real ids.
+    const shown = new Set(t.visible.map((m) => m.id));
+    const orphans = msgs.filter((m) => m.id.startsWith("local-") && !shown.has(m.id));
+    return orphans.length ? { ...t, visible: [...t.visible, ...orphans] } : t;
+  }, [msgs, overrides]);
 
   useEffect(() => {
     const el = threadRef.current;

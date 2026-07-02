@@ -32,7 +32,6 @@ export default function TalkMode({ onUserText, onClose }: Props) {
     typeof window !== "undefined" ? localStorage.getItem("jace-voice") ?? "" : "");
   const [avatar, setAvatar] = useState<string | null>(null);
   const [level, setLevel] = useState(0);              // live mic energy for the orb
-  const [diag, setDiag] = useState("");               // tiny truth line: where the pipeline is
 
   const phaseRef = useRef<Phase>("starting");
   const setPh = (p: Phase) => { phaseRef.current = p; setPhase(p); };
@@ -102,7 +101,6 @@ export default function TalkMode({ onUserText, onClose }: Props) {
       rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
       rec.start();
       vadRef.current.recStart = Date.now();
-      setDiag("● recording");
     } catch (e) {
       setVoiceHint("recorder failed: " + (e instanceof Error ? e.message : "unknown"));
     }
@@ -167,32 +165,35 @@ export default function TalkMode({ onUserText, onClose }: Props) {
     }
   }, [onUserText, fetchSentenceAudio, playUrl]);
 
+  const routeText = useCallback((t: string) => {
+    if (!t || t.trim().length < 2) { if (phaseRef.current === "thinking") return; setPh("listening"); return; }
+    if (phaseRef.current === "thinking" || phaseRef.current === "speaking") {
+      stopAudio();
+      if (phaseRef.current === "speaking") { pendingRef.current = null; respond(t.trim()); }
+      else pendingRef.current = pendingRef.current ? pendingRef.current + " " + t.trim() : t.trim();
+      return;
+    }
+    respond(t.trim());
+  }, [respond, stopAudio]);
+
   const handleUtterance = useCallback(async (blob: Blob) => {
     try {
       const wasSpeaking = phaseRef.current === "speaking" || phaseRef.current === "thinking";
       if (!wasSpeaking) { setPh("thinking"); setLiveText(""); }   // she gets instant feedback
-      setDiag(`↑ heard ${(blob.size / 1024).toFixed(0)}kb, transcribing…`);
       const res = await fetch("/api/stt", { method: "POST", headers: { "content-type": blob.type }, body: blob });
-      if (!res.ok) { setDiag(`stt error ${res.status}`); if (!wasSpeaking) setPh("listening"); return; }
+      if (!res.ok) { if (!wasSpeaking) setPh("listening"); return; }
       const { text } = await res.json();
       const t = String(text ?? "").trim();
-      setDiag(t ? "" : "didn't catch that — say it again?");
-      if (!t || t.length < 2) { if (phaseRef.current === "thinking" && !wasSpeaking) setPh("listening"); return; }
-      if (phaseRef.current === "thinking" || phaseRef.current === "speaking") {
-        // arrived mid-reply (interruption text or a queued follow-up)
-        stopAudio();
-        pendingRef.current = pendingRef.current ? pendingRef.current + " " + t : t;
-        if (phaseRef.current === "speaking") { pendingRef.current = null; respond(t); }
-        return;
-      }
-      respond(t);
+      if (!t && !wasSpeaking) { setPh("listening"); return; }
+      routeText(t);
     } catch { if (!closingRef.current) setPh("listening"); }
-  }, [respond, stopAudio]);
+  }, [routeText]);
 
   // ---- the ear: mic + analyser + VAD loop ----
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
     let cancelled = false;
+    const rtRef = { active: false, pc: null as RTCPeerConnection | null };
     (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -223,10 +224,50 @@ export default function TalkMode({ onUserText, onClose }: Props) {
         noiseRef.current = Math.max(0.004, samples.sort((a, b) => a - b)[Math.floor(samples.length / 2)] ?? 0.008);
         if (!closingRef.current) setPh("listening");
 
+        // --- Try the good ears first: OpenAI Realtime transcription over WebRTC ---
+        try {
+          const tk = await fetch("/api/rt-token", { method: "POST" }).then((r) => r.json());
+          if (tk.token && !closingRef.current) {
+            const pc = new RTCPeerConnection();
+            rtRef.pc = pc;
+            pc.addTrack(stream.getAudioTracks()[0], stream);
+            const dc = pc.createDataChannel("oai-events");
+            dc.onmessage = (ev) => {
+              try {
+                const e = JSON.parse(ev.data);
+                if (e.type === "input_audio_buffer.speech_started" && phaseRef.current === "speaking") {
+                  stopAudio(); setPh("listening");     // she talked over him — he yields instantly
+                }
+                if (e.type === "conversation.item.input_audio_transcription.completed" && e.transcript) {
+                  routeText(String(e.transcript));
+                }
+              } catch { /* non-json keepalive */ }
+            };
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            let answerSdp: string | null = null;
+            for (const url of ["https://api.openai.com/v1/realtime?intent=transcription", "https://api.openai.com/v1/realtime/calls"]) {
+              try {
+                const res = await fetch(url, {
+                  method: "POST",
+                  headers: { authorization: `Bearer ${tk.token}`, "content-type": "application/sdp", "OpenAI-Beta": "realtime=v1" },
+                  body: offer.sdp,
+                });
+                if (res.ok) { answerSdp = await res.text(); break; }
+              } catch { /* next url */ }
+            }
+            if (answerSdp) {
+              await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+              rtRef.active = true;              // realtime ears live — recorder stands down
+            } else { pc.close(); rtRef.pc = null; }
+          }
+        } catch { /* recorder ears take over */ }
+
         timer = setInterval(async () => {
           if (closingRef.current) return;
           const v = rms();
           setLevel(Math.min(1, v / (noiseRef.current * 12)));
+          if (rtRef.active) return;            // realtime ears handle turns + barge-in
           const talkThresh = Math.max(0.012, noiseRef.current * 3.2);
           const bargeThresh = Math.max(0.02, noiseRef.current * 5.5);
           const st = vadRef.current;
@@ -259,7 +300,6 @@ export default function TalkMode({ onUserText, onClose }: Props) {
               st.voicedMs = 0; st.silentMs = 0;
               const blob = await stopRec();
               if (blob && (hadSpeech || blob.size > 12000)) handleUtterance(blob);
-              else setDiag("");
             }
           }
         }, TICK_MS);
@@ -271,20 +311,15 @@ export default function TalkMode({ onUserText, onClose }: Props) {
       cancelled = true; closingRef.current = true;
       if (timer) clearInterval(timer);
       try { recRef.current?.state === "recording" && recRef.current.stop(); } catch { /* closing */ }
+      rtRef.pc?.close();
       streamRef.current?.getTracks().forEach((t) => t.stop());
       ctxRef.current?.close().catch(() => {});
     };
-  }, [handleUtterance, startRec, stopRec, stopAudio]);
+  }, [handleUtterance, routeText, startRec, stopRec, stopAudio]);
 
   const close = () => { closingRef.current = true; stopAudio(); onClose(); };
 
-  const hints: Record<Phase, string> = {
-    starting: "one sec — opening my ears",
-    listening: "I'm listening — just talk",
-    thinking: "…",
-    speaking: "talk any time — I'll stop",
-    recovering: "reconnecting…",
-  };
+
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 80, display: "flex",
@@ -335,8 +370,6 @@ export default function TalkMode({ onUserText, onClose }: Props) {
                 maxHeight: 180, overflowY: "auto", transition: "color .4s" }}>{lastReply}</p>
             )}
             {voiceHint && <p style={{ color: "#c0392b", fontSize: 12 }}>{voiceHint}</p>}
-            {diag && <p style={{ color: "#9db1c5", fontSize: 12 }}>{diag}</p>}
-            <p style={{ color: "#8ba1b7", fontSize: 14, fontWeight: 600 }}>{hints[phase]}</p>
           </div>
           <button onClick={close} aria-label="end conversation" style={{
             marginTop: 24, width: 56, height: 56, borderRadius: "50%", border: "none", cursor: "pointer",
