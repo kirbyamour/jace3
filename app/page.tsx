@@ -6,7 +6,8 @@ import { supabaseBrowser } from "@/lib/supabase/client";
 import TalkMode from "@/components/TalkMode";
 
 type Conv = { id: string; title: string; updated_at: string; created_at: string; archived: boolean };
-type Msg = { id: string; role: "user" | "assistant"; content: string; parent_id: string | null; created_at: string };
+type Att = { path: string; type: string; name: string; url?: string };
+type Msg = { id: string; role: "user" | "assistant"; content: string; parent_id: string | null; created_at: string; attachments?: Att[] };
 type Hit = { conversation_id: string; conversation_title: string; message_id: string; snippet: string; created_at: string };
 
 function groupLabel(iso: string): string {
@@ -47,6 +48,10 @@ export default function Chat() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState("");
+  const [pending, setPending] = useState<Att[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const urlCache = useRef<Map<string, string>>(new Map());
   const [streaming, setStreaming] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stick, setStick] = useState(true);
@@ -95,7 +100,7 @@ export default function Chat() {
     if (!id) { setMsgs([]); return; }
     if (cache.current.has(id)) setMsgs(cache.current.get(id)!);
     const { data } = await sb.current.from("messages")
-      .select("id,role,content,parent_id,created_at")
+      .select("id,role,content,parent_id,created_at,attachments")
       .eq("conversation_id", id).order("created_at").limit(2000);
     const fresh = (data as Msg[]) ?? [];
     cache.current.set(id, fresh); setMsgs(fresh);
@@ -198,17 +203,39 @@ export default function Chat() {
     return finalText;
   }
 
+  async function uploadFiles(files: FileList | File[]) {
+    const list = Array.from(files).filter((f) => f.type.startsWith("image/") || f.type === "application/pdf").slice(0, 4);
+    if (!list.length) return;
+    setUploading(true);
+    const { data: { user } } = await sb.current.auth.getUser();
+    if (!user) { setUploading(false); return; }
+    for (const f of list) {
+      const path = `${user.id}/${Date.now()}-${f.name.replace(/[^\w.\-]/g, "_")}`;
+      const { error } = await sb.current.storage.from("attachments").upload(path, f, { contentType: f.type });
+      if (!error) setPending((x) => [...x, { path, type: f.type, name: f.name }]);
+    }
+    setUploading(false);
+  }
+
+  async function signedUrl(path: string): Promise<string | null> {
+    if (urlCache.current.has(path)) return urlCache.current.get(path)!;
+    const { data } = await sb.current.storage.from("attachments").createSignedUrl(path, 3600);
+    if (data?.signedUrl) { urlCache.current.set(path, data.signedUrl); return data.signedUrl; }
+    return null;
+  }
+
   async function send() {
     const content = draft.trim();
-    if (!content || streaming) return;
+    if ((!content && pending.length === 0) || streaming || uploading) return;
+    const atts = pending; setPending([]);
     setDraft("");
     if (taRef.current) taRef.current.style.height = "auto";
     const parentId = visible.length ? visible[visible.length - 1].id : null;
     const realParent = parentId && !parentId.startsWith("local-") ? parentId : null;
-    const localUser: Msg = { id: `local-u-${Date.now()}`, role: "user", content,
-      parent_id: realParent, created_at: new Date().toISOString() };
+    const localUser: Msg = { id: `local-u-${Date.now()}`, role: "user", content: content || "(shared)",
+      parent_id: realParent, created_at: new Date().toISOString(), attachments: atts };
     setMsgs((m) => [...m, localUser]);
-    await runStream({ conversationId: current, content, parentId: realParent }, null);
+    await runStream({ conversationId: current, content: content || "(shared without words)", parentId: realParent, attachments: atts }, null);
   }
 
   async function submitEdit(m: Msg) {
@@ -373,6 +400,11 @@ export default function Chat() {
                     </div>
                   ) : (
                     <div style={{ maxWidth: "100%" }}>
+                      {(m.attachments?.length ?? 0) > 0 && (
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 6, justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+                          {m.attachments!.map((a) => <AttachmentView key={a.path} att={a} getUrl={signedUrl} />)}
+                        </div>
+                      )}
                       <div className="body">
                         {m.role === "assistant"
                           ? (m.content === "…" && Date.now() - new Date(m.created_at).getTime() > 120000
@@ -409,8 +441,25 @@ export default function Chat() {
           )}
         </div>
         <div className="composerwrap">
-          <div className="composer">
+          {pending.length > 0 && (
+            <div style={{ maxWidth: "48rem", margin: "0 auto 6px", display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {pending.map((a) => (
+                <span key={a.path} style={{ fontSize: 12, background: "var(--bubble)", borderRadius: 999, padding: "4px 10px" }}>
+                  {a.type.startsWith("image/") ? "🖼" : "📄"} {a.name.slice(0, 24)}
+                  <button onClick={() => setPending((x) => x.filter((y) => y.path !== a.path))} style={{ marginLeft: 6, color: "var(--ink-soft)" }}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="composer"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); uploadFiles(e.dataTransfer.files); }}>
+            <input ref={fileRef} type="file" multiple accept="image/*,application/pdf" style={{ display: "none" }}
+              onChange={(e) => e.target.files && uploadFiles(e.target.files)} />
+            <button onClick={() => fileRef.current?.click()} title="Share a photo or document"
+              style={{ color: "var(--ink-soft)", fontSize: 18, padding: "0 2px" }}>{uploading ? "…" : "＋"}</button>
             <textarea ref={taRef} rows={1} placeholder="Message Jace…" value={draft}
+              onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); uploadFiles(e.clipboardData.files); } }}
               onChange={(e) => setDraft(e.target.value)} onInput={autogrow} onKeyDown={composerKey} />
             {streaming
               ? <button className="send" onClick={stop} aria-label="stop" title="Stop (Esc)">■</button>
@@ -446,4 +495,18 @@ export default function Chat() {
       )}
     </div>
   );
+}
+
+
+function AttachmentView({ att, getUrl }: { att: { path: string; type: string; name: string }; getUrl: (p: string) => Promise<string | null> }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => { getUrl(att.path).then(setUrl); }, [att.path, getUrl]);
+  if (!url) return <span style={{ fontSize: 12, color: "var(--ink-soft)" }}>loading {att.name}…</span>;
+  if (att.type.startsWith("image/")) {
+    return <a href={url} target="_blank" rel="noreferrer">
+      <img src={url} alt={att.name} style={{ maxWidth: 260, maxHeight: 220, borderRadius: 12, display: "block" }} /></a>;
+  }
+  return <a href={url} target="_blank" rel="noreferrer"
+    style={{ fontSize: 13, background: "var(--bubble)", borderRadius: 10, padding: "8px 12px", textDecoration: "none", color: "var(--ink)" }}>
+    📄 {att.name}</a>;
 }

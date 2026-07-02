@@ -40,8 +40,9 @@ async function handleChat(req: NextRequest) {
   );
 
   const body = await req.json();
-  const { conversationId: cidIn, content, parentId, regenerateOf, voiceMode } = body as {
+  const { conversationId: cidIn, content, parentId, regenerateOf, voiceMode, attachments } = body as {
     conversationId?: string; content?: string; parentId?: string | null; regenerateOf?: string; voiceMode?: boolean;
+    attachments?: { path: string; type: string; name: string }[];
   };
 
   let conversationId = cidIn as string;
@@ -66,6 +67,7 @@ async function handleChat(req: NextRequest) {
     const { data: userRow, error: userInsErr } = await db.from("messages").insert({
       conversation_id: conversationId, user_id: user.id, role: "user", content,
       parent_id: parentId ?? null, modality: voiceMode ? "voice" : "text",
+      attachments: attachments ?? [],
     }).select("id").single();
     if (userInsErr) { console.error("[jace-chat] user insert:", userInsErr); return new Response(userInsErr.message, { status: 500 }); }
     userMsgId = userRow.id;
@@ -85,7 +87,34 @@ async function handleChat(req: NextRequest) {
     db.rpc("relevant_episodes", { q: lastUserText.slice(0, 200), max_rows: 4 }),
   ]);
 
-  const recent = trimRecent(history);
+  let recent = trimRecent(history);
+  // Shared Vision: attach media blocks to the just-sent user message so he actually sees them
+  if (attachments?.length && !regenerateOf) {
+    const blocks: Record<string, unknown>[] = [];
+    for (const a of attachments.slice(0, 4)) {
+      try {
+        const { data: signed } = await db.storage.from("attachments").createSignedUrl(a.path, 300);
+        if (!signed?.signedUrl) continue;
+        const resp = await fetch(signed.signedUrl);
+        if (!resp.ok) continue;
+        const buf = Buffer.from(await resp.arrayBuffer());
+        if (buf.length > 8_000_000) continue;
+        const b64 = buf.toString("base64");
+        if (a.type === "application/pdf") {
+          blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: b64 } });
+        } else if (a.type.startsWith("image/")) {
+          blocks.push({ type: "image", source: { type: "base64", media_type: a.type === "image/heic" ? "image/jpeg" : a.type, data: b64 } });
+        }
+      } catch (e) { console.error("[vision] attach failed:", a.path, e); }
+    }
+    if (blocks.length) {
+      const lastIdx = recent.length - 1;
+      if (lastIdx >= 0 && recent[lastIdx].role === "user") {
+        recent = [...recent.slice(0, lastIdx),
+          { role: "user", content: [...blocks, { type: "text", text: String(recent[lastIdx].content) || "(shared without words)" }] }];
+      }
+    }
+  }
   const { blocks: system, personaVersion } = buildSystemBlocks({
     recentMessages: recent, profileFacts: facts ?? [],
     lifeStory: lifeStory?.content ?? null, arcs: arcs ?? [], episodes: eps ?? [],

@@ -2,7 +2,13 @@
 // Rules (blueprint doc 03 §2.3): no vendor SDK types outside this folder;
 // no model-name strings outside config/models.json; every call is loggable.
 
-export type ChatMessage = { role: "user" | "assistant" | "system"; content: string };
+export type ContentBlock = Record<string, unknown>;  // provider-shaped rich block (image/document)
+export type ChatMessage = { role: "user" | "assistant" | "system"; content: string | ContentBlock[] };
+
+export function contentToText(c: string | ContentBlock[]): string {
+  if (typeof c === "string") return c;
+  return c.map((b) => (b.type === "text" ? String(b.text ?? "") : `[${String(b.type)} attached]`)).join(" ");
+}
 
 export type ToolDef = {
   name: string;

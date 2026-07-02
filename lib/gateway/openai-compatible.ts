@@ -1,4 +1,5 @@
 import type { Adapter } from "./types";
+import { contentToText } from "./types";
 
 // Generic OpenAI-compatible streaming adapter. Covers OpenAI, GLM (z.ai),
 // local servers (ollama/vllm/lmstudio), and most future providers via baseUrl config.
@@ -13,7 +14,7 @@ export const openaiCompatibleAdapter: Adapter = async (entry, system, messages, 
       model: entry.model,
       max_tokens: opts.maxTokens ?? entry.maxTokens ?? 2048,
       temperature: opts.temperature ?? 1,
-      messages: [{ role: "system", content: systemText }, ...messages.filter((m) => m.role !== "system")],
+      messages: [{ role: "system", content: systemText }, ...messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role, content: contentToText(m.content) }))],
       stream: true,
     }),
     signal: opts.signal,

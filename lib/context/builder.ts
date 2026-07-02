@@ -97,8 +97,9 @@ export function mergeConsecutive(messages: ChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
   for (const m of messages) {
     const last = out[out.length - 1];
-    if (last && last.role === m.role) last.content = `${last.content}\n\n${m.content}`;
-    else out.push({ ...m });
+    if (last && last.role === m.role && typeof last.content === "string" && typeof m.content === "string") {
+      last.content = `${last.content}\n\n${m.content}`;
+    } else out.push({ ...m });
   }
   return out;
 }
