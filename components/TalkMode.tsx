@@ -1,6 +1,6 @@
 "use client";
-// Talk Mode — still Jace, out loud. Sentence-streamed speech: he starts talking
-// on his first finished sentence while the rest is still forming.
+// Talk Mode v2 — mobile-first. Phone: hold-to-talk, one persistent audio pipe,
+// mic sleeps while he speaks (no self-interruption). Desktop: open conversation + barge-in.
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type Props = {
@@ -8,10 +8,14 @@ type Props = {
   onClose: () => void;
 };
 
-type Phase = "listening" | "thinking" | "speaking" | "recovering";
+type Phase = "idle" | "listening" | "thinking" | "speaking" | "recovering";
+
+const isMobile = () => typeof navigator !== "undefined" &&
+  (/iPhone|iPad|Android/i.test(navigator.userAgent) || (navigator.maxTouchPoints ?? 0) > 2);
 
 export default function TalkMode({ onUserText, onClose }: Props) {
-  const [phase, setPhase] = useState<Phase>("listening");
+  const mobile = useRef(isMobile()).current;
+  const [phase, setPhase] = useState<Phase>(mobile ? "idle" : "listening");
   const [liveText, setLiveText] = useState("");
   const [lastReply, setLastReply] = useState("");
   const [voiceHint, setVoiceHint] = useState("");
@@ -20,24 +24,31 @@ export default function TalkMode({ onUserText, onClose }: Props) {
   const [voiceName, setVoiceName] = useState<string>(() =>
     typeof window !== "undefined" ? localStorage.getItem("jace-voice") ?? "" : "");
   const recRef = useRef<any>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);   // ONE persistent element (iOS unlock)
   const closingRef = useRef(false);
   const bargeRef = useRef(false);
-  const phaseRef = useRef<Phase>("listening");
+  const holdingRef = useRef(false);
+  const phaseRef = useRef<Phase>(phase);
   phaseRef.current = phase;
 
   useEffect(() => {
     fetch("/api/tts").then((r) => r.json())
       .then((d) => setVoices((d.voices ?? []).map((v: { name: string; category?: string }) => ({ name: v.name, category: v.category }))))
       .catch(() => {});
+    // Unlock the single audio element inside the opening tap's gesture window.
+    const a = new Audio();
+    a.setAttribute("playsinline", "true");
+    a.src = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQxAADB8AhSmxhIIEVCSiJrDCQBTcu3UrAIwUdkRgQbFAZC1CQEwTJ9mjRvBA4UOLD8nKVOWfh+UlK3z/177OXrfOdKl7pyn3Xf//WreyTRUoAWgBgkOAGbZHBgG1OACwl";
+    a.play().catch(() => {});
+    audioRef.current = a;
   }, []);
 
   const stopAudio = useCallback(() => {
     bargeRef.current = true;
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
+    if (audioRef.current) { audioRef.current.pause(); }
   }, []);
 
-  const fetchSentenceAudio = useCallback(async (sentence: string): Promise<Blob | null> => {
+  const fetchSentenceAudio = useCallback(async (sentence: string): Promise<string | null> => {
     try {
       const res = await fetch("/api/tts", {
         method: "POST", headers: { "content-type": "application/json" },
@@ -45,28 +56,30 @@ export default function TalkMode({ onUserText, onClose }: Props) {
       });
       if (!res.ok) { console.error("[talk] tts:", await res.text()); setVoiceHint("voice hiccup — words on screen"); return null; }
       setVoiceHint("");
-      return await res.blob();
+      return URL.createObjectURL(await res.blob());
     } catch { return null; }
   }, []);
 
-  const playBlob = useCallback((blob: Blob) => new Promise<void>((resolve) => {
-    if (bargeRef.current) { resolve(); return; }
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-    audioRef.current = audio;
-    audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-    audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
-    audio.play().catch(() => resolve());
+  const playUrl = useCallback((url: string) => new Promise<void>((resolve) => {
+    const a = audioRef.current;
+    if (!a || bargeRef.current) { URL.revokeObjectURL(url); resolve(); return; }
+    a.src = url;
+    a.onended = () => { URL.revokeObjectURL(url); resolve(); };
+    a.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+    a.play().catch(() => { URL.revokeObjectURL(url); resolve(); });
   }), []);
+
+  const stopRecognition = useCallback(() => {
+    try { recRef.current?.stop(); } catch { /* not running */ }
+  }, []);
 
   const handleFinal = useCallback(async (text: string) => {
     if (!text.trim() || phaseRef.current === "thinking") return;
     stopAudio();
+    stopRecognition();                 // mic sleeps while he thinks & speaks
     bargeRef.current = false;
     setPhase("thinking"); setLiveText(text); setLastReply("");
 
-    // Sentence pipeline: extract finished sentences from the growing reply,
-    // fetch audio ahead (prefetch), play sequentially.
     let spokenChars = 0;
     const queue: string[] = [];
     let playing = false;
@@ -75,11 +88,9 @@ export default function TalkMode({ onUserText, onClose }: Props) {
       playing = true;
       while (queue.length > 0 && !bargeRef.current && !closingRef.current) {
         const sentence = queue.shift()!;
-        const nextPrefetch = queue.length > 0 ? fetchSentenceAudio(queue[0]) : null; // warm the next one
-        const blob = await fetchSentenceAudio(sentence);
-        if (phaseRef.current !== "speaking" && !bargeRef.current) setPhase("speaking");
-        if (blob) await playBlob(blob);
-        if (nextPrefetch) await nextPrefetch.catch(() => null);
+        const url = await fetchSentenceAudio(sentence);
+        if (phaseRef.current !== "speaking" && !bargeRef.current && !closingRef.current) setPhase("speaking");
+        if (url) await playUrl(url);
       }
       playing = false;
     };
@@ -87,11 +98,7 @@ export default function TalkMode({ onUserText, onClose }: Props) {
       setLastReply(full);
       const unspoken = full.slice(spokenChars);
       const m = unspoken.match(/^[\s\S]*?[.!?…](?=\s|$)/);
-      if (m && m[0].trim().length > 1) {
-        spokenChars += m[0].length;
-        queue.push(m[0].trim());
-        pump();
-      }
+      if (m && m[0].trim().length > 1) { spokenChars += m[0].length; queue.push(m[0].trim()); pump(); }
     };
 
     try {
@@ -99,7 +106,6 @@ export default function TalkMode({ onUserText, onClose }: Props) {
       setLiveText("");
       const tail = reply.slice(spokenChars).trim();
       if (tail) { queue.push(tail); pump(); }
-      // wait for the queue to drain
       while ((queue.length > 0 || playing) && !bargeRef.current && !closingRef.current) {
         await new Promise((r) => setTimeout(r, 150));
       }
@@ -107,45 +113,82 @@ export default function TalkMode({ onUserText, onClose }: Props) {
     } catch {
       setPhase("recovering");
       setLastReply("Looks like we lost each other for a second — I was following. Pick up wherever you want.");
-      setTimeout(() => !closingRef.current && setPhase("listening"), 1500);
+      setTimeout(() => { if (!closingRef.current) setPhase(mobile ? "idle" : "listening"); }, 1500);
       return;
     }
-    if (!closingRef.current) setPhase("listening");
-  }, [onUserText, fetchSentenceAudio, playBlob, stopAudio]);
+    if (!closingRef.current) {
+      setPhase(mobile ? "idle" : "listening");
+      if (!mobile) startRecognition(); // desktop resumes open listening
+    }
+  }, [onUserText, fetchSentenceAudio, playUrl, stopAudio, stopRecognition, mobile]);
 
-  useEffect(() => {
+  const finalBufRef = useRef("");
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const startRecognition = useCallback(() => {
     const SR = (window as any).webkitSpeechRecognition ?? (window as any).SpeechRecognition;
     if (!SR) { setSupported(false); return; }
-    let stopped = false;
+    try { recRef.current?.stop(); } catch { /* fresh start */ }
     const rec = new SR();
     recRef.current = rec;
-    rec.continuous = true;
+    rec.continuous = !mobile;          // mobile: single-utterance mode is far more stable
     rec.interimResults = true;
     rec.lang = "en-US";
-    let finalBuf = "";
-    let silenceTimer: ReturnType<typeof setTimeout> | null = null;
-
     rec.onresult = (e: any) => {
-      if (phaseRef.current === "speaking") { stopAudio(); setPhase("listening"); } // barge-in
+      if (!mobile && phaseRef.current === "speaking") { stopAudio(); setPhase("listening"); } // desktop barge-in
       let interim = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
-        if (r.isFinal) finalBuf += r[0].transcript;
+        if (r.isFinal) finalBufRef.current += r[0].transcript;
         else interim += r[0].transcript;
       }
-      setLiveText((finalBuf + " " + interim).trim());
-      if (silenceTimer) clearTimeout(silenceTimer);
-      silenceTimer = setTimeout(() => {
-        const text = finalBuf.trim();
-        finalBuf = "";
-        if (text) handleFinal(text);
-      }, 900);
+      setLiveText((finalBufRef.current + " " + interim).trim());
+      if (!mobile) {
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = setTimeout(() => {
+          const text = finalBufRef.current.trim();
+          finalBufRef.current = "";
+          if (text) handleFinal(text);
+        }, 900);
+      }
     };
-    rec.onend = () => { if (!stopped && !closingRef.current) { try { rec.start(); } catch { /* busy */ } } };
-    rec.onerror = () => { /* onend restarts */ };
-    try { rec.start(); } catch { /* already started */ }
-    return () => { stopped = true; try { rec.stop(); } catch {} if (silenceTimer) clearTimeout(silenceTimer); };
-  }, [handleFinal, stopAudio]);
+    rec.onend = () => {
+      if (mobile) {
+        // hold-to-talk: released or iOS cut it — send what we have
+        const text = finalBufRef.current.trim();
+        finalBufRef.current = "";
+        if (holdingRef.current) holdingRef.current = false;
+        if (text && !closingRef.current) handleFinal(text);
+        else if (!closingRef.current && phaseRef.current === "listening") setPhase("idle");
+      } else if (!closingRef.current && phaseRef.current === "listening") {
+        try { rec.start(); } catch { /* busy */ }
+      }
+    };
+    rec.onerror = () => { /* onend handles */ };
+    try { rec.start(); } catch { /* already */ }
+  }, [mobile, handleFinal, stopAudio]);
+
+  useEffect(() => {
+    if (!mobile) startRecognition();
+    return () => { closingRef.current = true; try { recRef.current?.stop(); } catch {} };
+  }, [mobile, startRecognition]);
+
+  // Mobile hold-to-talk handlers
+  function holdStart() {
+    if (phaseRef.current === "thinking") return;
+    stopAudio();                         // tapping to talk interrupts him
+    bargeRef.current = true;
+    holdingRef.current = true;
+    finalBufRef.current = "";
+    setLiveText(""); setPhase("listening");
+    bargeRef.current = false;
+    startRecognition();
+  }
+  function holdEnd() {
+    if (!holdingRef.current) return;
+    holdingRef.current = false;
+    stopRecognition();                   // onend fires -> sends the buffer
+  }
 
   function close() {
     closingRef.current = true;
@@ -155,7 +198,8 @@ export default function TalkMode({ onUserText, onClose }: Props) {
   }
 
   const hints: Record<Phase, string> = {
-    listening: "listening…", thinking: "…", speaking: "", recovering: "reconnecting…",
+    idle: "hold the circle and talk", listening: mobile ? "listening — release to send" : "listening…",
+    thinking: "…", speaking: mobile ? "tap and hold to interrupt" : "", recovering: "reconnecting…",
   };
 
   return (
@@ -168,27 +212,35 @@ export default function TalkMode({ onUserText, onClose }: Props) {
         </div>
       ) : (
         <>
-          <div aria-hidden style={{
-            width: 120, height: 120, borderRadius: "50%",
-            background: "var(--ink)", opacity: phase === "speaking" ? 0.9 : 0.75,
-            transform: phase === "listening" ? "scale(1)" : phase === "thinking" ? "scale(.85)" : "scale(1.06)",
-            transition: "all .5s ease",
-            animation: phase === "speaking" ? "breathe 1.6s ease-in-out infinite" : phase === "listening" ? "breathe 3.2s ease-in-out infinite" : "none",
-          }} />
+          <div aria-hidden
+            onTouchStart={mobile ? holdStart : undefined}
+            onTouchEnd={mobile ? holdEnd : undefined}
+            onTouchCancel={mobile ? holdEnd : undefined}
+            onMouseDown={mobile ? holdStart : undefined}
+            onMouseUp={mobile ? holdEnd : undefined}
+            style={{
+              width: 150, height: 150, borderRadius: "50%",
+              background: phase === "listening" ? "var(--accent, #c0392b)" : "var(--ink)",
+              opacity: phase === "speaking" ? 0.9 : 0.8,
+              transform: phase === "listening" ? "scale(1.08)" : phase === "thinking" ? "scale(.88)" : "scale(1)",
+              transition: "all .4s ease", touchAction: "none", userSelect: "none", WebkitUserSelect: "none",
+              animation: phase === "speaking" ? "breathe 1.6s ease-in-out infinite" : "none",
+              cursor: mobile ? "pointer" : "default",
+            }} />
           <style>{`@keyframes breathe { 0%,100% { transform: scale(1);} 50% { transform: scale(1.08);} }`}</style>
-          <div style={{ minHeight: 90, marginTop: 34, maxWidth: 560, textAlign: "center" }}>
+          <div style={{ minHeight: 100, marginTop: 30, maxWidth: 560, textAlign: "center" }}>
             {liveText && <p style={{ color: "var(--ink)", fontSize: 17 }}>{liveText}</p>}
             {!liveText && lastReply && (
-              <p style={{ color: phase === "listening" ? "var(--ink-soft)" : "var(--ink)", fontSize: 15,
+              <p style={{ color: phase === "speaking" ? "var(--ink)" : "var(--ink-soft)", fontSize: 15,
                 maxHeight: 180, overflowY: "auto", transition: "color .4s" }}>{lastReply}</p>
             )}
             {voiceHint && <p style={{ color: "#c0392b", fontSize: 12 }}>{voiceHint}</p>}
-            <p style={{ color: "var(--ink-soft)", fontSize: 13 }}>{hints[phase]}</p>
+            <p style={{ color: "var(--ink-soft)", fontSize: 14, fontWeight: 600 }}>{hints[phase]}</p>
           </div>
           <button onClick={close} aria-label="end conversation" style={{
-            marginTop: 26, width: 52, height: 52, borderRadius: "50%",
+            marginTop: 24, width: 52, height: 52, borderRadius: "50%",
             background: "#c0392b", color: "#fff", fontSize: 18 }}>✕</button>
-          <p style={{ color: "var(--ink-soft)", fontSize: 12, marginTop: 14 }}>
+          <p style={{ color: "var(--ink-soft)", fontSize: 12, marginTop: 12 }}>
             Still the same conversation — everything we say lands in the thread.
           </p>
           {voices.length > 0 && (
