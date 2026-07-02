@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { supabaseServer } from "@/lib/supabase/server";
 import { extractPdfText, extractUrlText } from "@/lib/reading/extract";
 import { cleanForListening, splitForSpeech } from "@/lib/reading/clean";
+import { generateText } from "@/lib/gateway";
 
 export const runtime = "nodejs";
 export const maxDuration = 300; // cleaning a long study takes real time
@@ -22,15 +23,25 @@ export async function GET() {
   const [{ data: folders }, { data: items }] = await Promise.all([
     db.from("reading_folders").select("*").order("sort_order").order("name"),
     db.from("reading_items")
-      .select("id, folder_id, title, source_kind, source_url, status, clean_mode, progress_seconds, duration_seconds, notes, added_at, listen_text")
+      .select("id, folder_id, title, author, source_kind, source_url, storage_path, cover_path, status, clean_mode, progress_seconds, duration_seconds, notes, added_at, listen_text")
       .order("added_at", { ascending: false }),
   ]);
+  // Signed cover URLs, one batch call
+  const coverPaths = (items ?? []).map((i) => i.cover_path).filter(Boolean) as string[];
+  const coverMap = new Map<string, string>();
+  if (coverPaths.length) {
+    const { data: signed } = await db.storage.from("reading").createSignedUrls(coverPaths, 3600);
+    (signed ?? []).forEach((s2, i2) => { if (s2.signedUrl) coverMap.set(coverPaths[i2], s2.signedUrl); });
+  }
   // Don't ship megabytes of text in the list — just readiness + a size hint.
   const slim = (items ?? []).map((i) => ({
     ...i,
     has_text: !!i.listen_text,
+    has_file: !!i.storage_path,
+    duration_seconds: i.duration_seconds ?? (i.listen_text ? Math.round((i.listen_text.split(/\s+/).length / 155) * 60) : null),
+    cover_url: i.cover_path ? coverMap.get(i.cover_path) ?? null : null,
     words: i.listen_text ? i.listen_text.split(/\s+/).length : 0,
-    listen_text: undefined,
+    listen_text: undefined, storage_path: undefined, cover_path: undefined,
   }));
   return Response.json({ folders: folders ?? [], items: slim });
 }
@@ -106,6 +117,46 @@ export async function POST(req: NextRequest) {
     if (!item) return Response.json({ ok: false });
     const text = item.listen_text ?? item.raw_text ?? "";
     return Response.json({ ok: true, title: item.title, mode: item.clean_mode, paragraphs: splitForSpeech(text) });
+  }
+
+  if (act === "file_url") { // short-lived signed URL so the browser can render a cover
+    const { data: item } = await db.from("reading_items").select("storage_path").eq("id", body.id).single();
+    if (!item?.storage_path) return Response.json({ ok: false });
+    const { data: signed } = await db.storage.from("reading").createSignedUrl(item.storage_path, 3600);
+    return Response.json({ ok: !!signed?.signedUrl, url: signed?.signedUrl });
+  }
+
+  if (act === "set_cover") { // browser-rendered first page, cached forever
+    const buf = Buffer.from(body.base64, "base64");
+    if (buf.length > 400_000) return Response.json({ ok: false, error: "cover too large" });
+    const path = `covers/${body.id}.jpg`;
+    await db.storage.from("reading").upload(path, buf, { contentType: "image/jpeg", upsert: true });
+    await db.from("reading_items").update({ cover_path: path }).eq("id", body.id);
+    return Response.json({ ok: true });
+  }
+
+  if (act === "fix_titles") { // rename filename-looking titles to the piece's real title
+    const { data: all } = await db.from("reading_items").select("id, title, listen_text, raw_text").limit(300);
+    const looksLikeFile = (t: string) => /\.(pdf|docx?|txt|epub)$/i.test(t) || (/[_-]/.test(t) && !/\s/.test(t));
+    const suspects = (all ?? []).filter((i) => looksLikeFile(i.title)).slice(0, 10);
+    let fixed = 0;
+    for (const it of suspects) {
+      const text = (it.listen_text ?? it.raw_text ?? "").slice(0, 1800);
+      if (!text.trim()) continue;
+      try {
+        const { text: out } = await generateText(
+          "You extract the true title of a written piece from its opening text. Reply with ONLY the title — no quotes, no commentary, no trailing period. If it is clearly by an organization or named author, you may append ' — Author'. Maximum 90 characters.",
+          [{ role: "user", content: `Filename: ${it.title}\n\nOpening of the document:\n${text}` }],
+          { maxTokens: 60 }
+        );
+        const t = out.trim().split("\n")[0].replace(/^["'“]+|["'”]+$/g, "").trim();
+        if (t.length > 3 && t.length <= 120 && !looksLikeFile(t)) {
+          await db.from("reading_items").update({ title: t }).eq("id", it.id);
+          fixed++;
+        }
+      } catch { /* try again next pass */ }
+    }
+    return Response.json({ ok: true, fixed, more: suspects.length === 10 });
   }
 
   if (act === "update") {

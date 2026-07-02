@@ -6,13 +6,34 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 type Folder = { id: string; name: string; emoji: string | null };
 type Item = {
-  id: string; folder_id: string | null; title: string; source_kind: string;
+  id: string; folder_id: string | null; title: string; author: string | null; source_kind: string;
   source_url: string | null; status: string; clean_mode: string | null;
   progress_seconds: number; duration_seconds: number | null; notes: string | null;
-  added_at: string; has_text: boolean; words: number;
+  added_at: string; has_text: boolean; has_file: boolean; words: number; cover_url: string | null;
 };
 
-const fmtMin = (s?: number | null) => (s ? `${Math.max(1, Math.round(s / 60))} min` : "");
+type SpeechVoice = { id: string; name: string; gender: string; tags: string[] };
+
+declare global { interface Window { pdfjsLib?: { GlobalWorkerOptions: { workerSrc: string }; getDocument: (o: { url: string }) => { promise: Promise<{ getPage: (n: number) => Promise<{ getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: { canvasContext: CanvasRenderingContext2D; viewport: { width: number; height: number } }) => { promise: Promise<void> } }> }> } }; } }
+
+const PDFJS = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const PDFJS_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+function loadPdfJs(): Promise<NonNullable<Window["pdfjsLib"]> | null> {
+  return new Promise((resolve) => {
+    if (window.pdfjsLib) { resolve(window.pdfjsLib); return; }
+    const sc = document.createElement("script");
+    sc.src = PDFJS;
+    sc.onload = () => { if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER; resolve(window.pdfjsLib ?? null); };
+    sc.onerror = () => resolve(null);
+    document.head.appendChild(sc);
+  });
+}
+
+const fmtMin = (s?: number | null) => {
+  if (!s) return "";
+  const m = Math.max(1, Math.round(s / 60));
+  return m >= 60 ? `${Math.floor(m / 60)} hr ${m % 60} min listen` : `${m} min listen`;
+};
 
 export default function ReadPage() {
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -30,6 +51,8 @@ export default function ReadPage() {
   const [paused, setPaused] = useState(false);
   const [rate, setRate] = useState(1);
   const [showText, setShowText] = useState(true);
+  const [voices, setVoices] = useState<SpeechVoice[]>([]);
+  const [voice, setVoice] = useState<string>("");
   const paraRefs = useRef<(HTMLParagraphElement | null)[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const cacheRef = useRef<Map<string, string>>(new Map()); // `${id}:${i}` -> objectURL
@@ -39,27 +62,77 @@ export default function ReadPage() {
     const r = await fetch("/api/read");
     if (r.ok) { const d = await r.json(); setFolders(d.folders); setItems(d.items); }
   }, []);
-  useEffect(() => { load(); }, [load]);
-
   const api = useCallback(async (body: Record<string, unknown>) => {
     const r = await fetch("/api/read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     return r.json();
   }, []);
 
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => { // reader voice options (Speechify) + remembered choice
+    setVoice(localStorage.getItem("reader_voice") ?? "");
+    fetch("/api/read/audio").then((r) => r.json()).then((d) => { if (d.ok && d.voices?.length) { setVoices(d.voices); if (!localStorage.getItem("reader_voice") && d.active) setVoice(d.active); } }).catch(() => {});
+  }, []);
+  const fixingRef = useRef(false);
+  useEffect(() => { // real titles: rename filename-looking entries from their content (runs quietly, a few at a time)
+    const suspects = items.some((i) => /\.(pdf|docx?|txt|epub)$/i.test(i.title) || (/[_-]/.test(i.title) && !/\s/.test(i.title)));
+    if (!suspects || fixingRef.current) return;
+    fixingRef.current = true;
+    (async () => {
+      for (let pass = 0; pass < 4; pass++) {
+        const d = await api({ action: "fix_titles" });
+        if (!d.ok || !d.fixed) break;
+        await load();
+        if (!d.more) break;
+      }
+      fixingRef.current = false;
+    })();
+  }, [items, api, load]);
+  const coveringRef = useRef(false);
+  useEffect(() => { // covers: render page 1 of PDFs in the browser, cache in storage
+    const need = items.filter((i) => !i.cover_url && i.has_file).slice(0, 5);
+    if (!need.length || coveringRef.current) return;
+    coveringRef.current = true;
+    (async () => {
+      const pdfjs = await loadPdfJs();
+      if (!pdfjs) { coveringRef.current = false; return; }
+      for (const it of need) {
+        try {
+          const u = await api({ action: "file_url", id: it.id });
+          if (!u.ok) continue;
+          const doc = await pdfjs.getDocument({ url: u.url }).promise;
+          const page = await doc.getPage(1);
+          const vp0 = page.getViewport({ scale: 1 });
+          const scale = 220 / vp0.width;
+          const vp = page.getViewport({ scale });
+          const canvas = document.createElement("canvas");
+          canvas.width = vp.width; canvas.height = vp.height;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) continue;
+          await page.render({ canvasContext: ctx, viewport: vp }).promise;
+          const b64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+          await api({ action: "set_cover", id: it.id, base64: b64 });
+        } catch { /* cover is a nicety; never block the library */ }
+      }
+      coveringRef.current = false;
+      load();
+    })();
+  }, [items, api, load]);
+
+
   // ---- audio pipeline: fetch paragraph i (with cache), returns object URL ----
   const fetchChunk = useCallback(async (itemId: string, i: number): Promise<string | null> => {
-    const key = `${itemId}:${i}`;
+    const key = `${itemId}:${voice}:${i}`;
     const hit = cacheRef.current.get(key);
     if (hit) return hit;
     const r = await fetch("/api/read/audio", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ itemId, index: i }),
+      body: JSON.stringify({ itemId, index: i, voice: voice || undefined }),
     });
     if (!r.ok) return null;
     const urlObj = URL.createObjectURL(await r.blob());
     cacheRef.current.set(key, urlObj);
     return urlObj;
-  }, []);
+  }, [voice]);
 
   const playFrom = useCallback(async (item: Item, startIdx: number, paraList: string[]) => {
     const session = ++sessionRef.current;
@@ -275,6 +348,13 @@ export default function ReadPage() {
       {!playing && visible.length === 0 && items.length > 0 && <p style={{ color: "var(--ink-soft)" }}>Nothing here yet.</p>}
       {(playing && showText ? [] : visible).map((it) => (
         <div key={it.id} className="card" style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 16px", marginBottom: 10 }}>
+          {it.cover_url ? (
+            <img src={it.cover_url} alt="" style={{ width: 46, height: 62, objectFit: "cover", borderRadius: 6, border: "1px solid var(--line)", flexShrink: 0 }} />
+          ) : (
+            <div style={{ width: 46, height: 62, borderRadius: 6, border: "1px solid var(--line)", background: "var(--bubble)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--ink-soft)", fontSize: 20, flexShrink: 0 }}>
+              {it.source_kind === "url" ? "🔗" : "📄"}
+            </div>
+          )}
           <button onClick={() => startListening(it)} disabled={busy === it.id}
             title={it.progress_seconds > 0 ? "Resume" : "Listen"}
             style={{ width: 44, height: 44, borderRadius: 22, border: "none", background: "var(--accent)", color: "var(--bg)", fontSize: 17, cursor: "pointer", flexShrink: 0 }}>
@@ -283,7 +363,7 @@ export default function ReadPage() {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.title}</div>
             <div style={{ color: "var(--ink-soft)", fontSize: 13 }}>
-              {it.source_kind.toUpperCase()} · {fmtMin(it.duration_seconds)}{it.words ? ` · ${it.words.toLocaleString()} words` : ""}
+              {it.author ? `${it.author} · ` : ""}{fmtMin(it.duration_seconds) || it.source_kind.toUpperCase()}{it.words ? ` · ${it.words.toLocaleString()} words` : ""}
               {it.clean_mode ? ` · cleaned (${it.clean_mode})` : it.has_text ? " · raw text" : ""}
               {it.progress_seconds > 0 && it.status !== "done" ? " · in progress" : ""}
             </div>
@@ -333,6 +413,14 @@ export default function ReadPage() {
                       color: rate === r ? "var(--bg)" : "var(--ink)" }}>{r}×</button>
                 ))}
               </div>
+              {voices.length > 0 && (
+                <select value={voice} title="Reading voice"
+                  onChange={(e) => { setVoice(e.target.value); localStorage.setItem("reader_voice", e.target.value);
+                    if (playing) { const cur = idx; const item = playing; const list = paras; setTimeout(() => playFrom(item, cur, list), 50); } }}
+                  style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--pill-bg)", color: "var(--ink)", fontSize: 13, maxWidth: 130 }}>
+                  {voices.map((v) => <option key={v.id} value={v.id}>{v.name}{v.gender ? ` (${v.gender[0]})` : ""}</option>)}
+                </select>
+              )}
               <button onClick={() => setShowText(!showText)} title="Follow along with the text"
                 style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer", fontSize: 13,
                   background: showText ? "var(--accent)" : "var(--pill-bg)", color: showText ? "var(--bg)" : "var(--ink)" }}>text</button>
