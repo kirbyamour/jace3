@@ -3,7 +3,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { supabaseServer } from "@/lib/supabase/server";
 import { generate } from "@/lib/gateway";
 import { buildSystemBlocks, trimRecent } from "@/lib/context/builder";
-import { historyTools, heartTools, todoTools, projectTools, connectionTools, makeHistoryExecutor } from "@/lib/context/history-tools";
+import { historyTools, heartTools, todoTools, projectTools, connectionTools, creationTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import type { ChatMessage } from "@/lib/gateway/types";
 
 export const runtime = "nodejs";
@@ -124,7 +124,7 @@ async function handleChat(req: NextRequest) {
     cycleDay1: settingsRow?.cycle_day1 ?? null,
   });
   const { stream, modelId } = await generate(system, recent, {
-    tools: [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools], runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
+    tools: [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools, ...creationTools], runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
   });
 
   // Persist the assistant row BEFORE streaming (pre-stream writes are reliable);

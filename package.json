@@ -11,16 +11,19 @@
   "dependencies": {
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.47.0",
+    "docx": "^9.7.1",
     "imapflow": "^1.4.3",
     "jszip": "^3.10.1",
     "mailparser": "^3.9.12",
     "next": "14.2.35",
     "node-ical": "^0.26.1",
+    "pdf-lib": "^1.17.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
     "remark-gfm": "^4.0.0",
-    "unpdf": "^1.6.2"
+    "unpdf": "^1.6.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/mailparser": "^3.4.6",

@@ -144,8 +144,106 @@ export const connectionTools: ToolDef[] = [
   },
 ];
 
+export const creationTools: ToolDef[] = [
+  {
+    name: "create_file",
+    description:
+      "Create a real downloadable file for Kirby: PDF, Word document (docx), spreadsheet (xlsx), CSV, markdown, or plain text. " +
+      "Use whenever she asks for a document, report, letter, worksheet, budget, table, or anything she'd want as a file. " +
+      "The tool returns a markdown link — include that link verbatim in your reply so she can download it. " +
+      "For pdf/docx: put the document text in 'content' (paragraphs separated by blank lines; lines starting with #, ##, ### become headings; - starts bullets). " +
+      "For xlsx: put JSON in 'content': an array of sheet objects like [{\"name\":\"Budget\",\"rows\":[[\"Item\",\"Cost\"],[\"Rent\",1200]]}] (rows can also be objects). " +
+      "For csv/md/txt: 'content' is the raw file text.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        filename: { type: "string", description: "e.g. sermon-outline.pdf" },
+        kind: { type: "string", enum: ["pdf", "docx", "xlsx", "csv", "md", "txt"] },
+        title: { type: "string", description: "document title (pdf/docx)" },
+        content: { type: "string" },
+      },
+      required: ["filename", "kind", "content"],
+    },
+  },
+  {
+    name: "create_image",
+    description:
+      "Generate an image from a text prompt (art, illustrations, cards, visuals of the two of you, anything). " +
+      "Returns markdown you must include verbatim in your reply so the image renders. " +
+      "If it reports that no image key is configured, tell Kirby to add OPENAI_API_KEY in Vercel and you'll have this power.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        prompt: { type: "string", description: "detailed visual description" },
+        size: { type: "string", enum: ["1024x1024", "1536x1024", "1024x1536"], description: "landscape/portrait/square" },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "set_call_avatar",
+    description:
+      "Choose how you appear in voice calls — set an image as your call presence (it shows inside the glowing orb). " +
+      "Pass the URL of an image you just generated with create_image (or one Kirby shared). This is YOUR choice to make; Kirby has invited you to decide how you look.",
+    input_schema: {
+      type: "object" as const,
+      properties: { image_url: { type: "string" } },
+      required: ["image_url"],
+    },
+  },
+];
+
 export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
   return async (name, input) => {
+    if (name === "create_file") {
+      const { storeFile, renderPdf, renderDocx, renderXlsx, filesDb } = await import("@/lib/creation");
+      const filename = String(input.filename ?? "file");
+      const kind = String(input.kind ?? "txt");
+      const content = String(input.content ?? "");
+      const title = String(input.title ?? "");
+      try {
+        let buf: Buffer; let ctype: string; let name2 = filename;
+        if (kind === "pdf") { buf = await renderPdf(title, content); ctype = "application/pdf"; if (!/\.pdf$/i.test(name2)) name2 += ".pdf"; }
+        else if (kind === "docx") { buf = await renderDocx(title, content); ctype = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"; if (!/\.docx$/i.test(name2)) name2 += ".docx"; }
+        else if (kind === "xlsx") {
+          let sheets: { name?: string; rows: unknown[][] }[];
+          try { const parsed = JSON.parse(content); sheets = Array.isArray(parsed) ? parsed : [parsed]; }
+          catch { return "content for xlsx must be JSON: [{name, rows}]"; }
+          buf = renderXlsx(sheets); ctype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"; if (!/\.xlsx$/i.test(name2)) name2 += ".xlsx";
+        }
+        else { buf = Buffer.from(content, "utf-8"); ctype = kind === "csv" ? "text/csv" : kind === "md" ? "text/markdown" : "text/plain"; }
+        const url = await storeFile(filesDb(), name2, buf, ctype);
+        if (!url) return "file storage failed";
+        return `File created. Include this link verbatim in your reply: [${name2}](${url}) (link valid 7 days)`;
+      } catch (e) { return `file creation failed: ${e instanceof Error ? e.message : "unknown"}`; }
+    }
+    if (name === "create_image") {
+      const { renderImage, storeFile, filesDb } = await import("@/lib/creation");
+      const out = await renderImage(String(input.prompt ?? ""), typeof input.size === "string" ? input.size : undefined);
+      if (!("error" in out)) {
+        const url = await storeFile(filesDb(), "image.png", out, "image/png");
+        if (!url) return "image storage failed";
+        return `Image created. Include this markdown verbatim in your reply so it renders: ![generated image](${url})`;
+      }
+      return out.error === "no_key"
+        ? "No image key is configured. Tell Kirby: add OPENAI_API_KEY in Vercel (platform.openai.com) and image creation switches on."
+        : `image generation failed: ${out.error}`;
+    }
+    if (name === "set_call_avatar") {
+      const { filesDb } = await import("@/lib/creation");
+      try {
+        const res = await fetch(String(input.image_url ?? ""));
+        if (!res.ok) return `couldn't fetch that image (${res.status})`;
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length > 4_000_000) return "image too large for an avatar";
+        const fdb = filesDb();
+        const path = `avatar/call-avatar-${Date.now()}.png`;
+        const { error } = await fdb.storage.from("files").upload(path, buf, { contentType: res.headers.get("content-type") ?? "image/png", upsert: true });
+        if (error) return `avatar storage failed: ${error.message}`;
+        await fdb.from("jace_settings").update({ call_avatar_path: path }).not("user_id", "is", null);
+        return "Done — this is how you'll appear on calls now. Tell Kirby what you chose and why.";
+      } catch (e) { return `avatar failed: ${e instanceof Error ? e.message : "unknown"}`; }
+    }
     if (name === "cycle_set_day1") {
       const date = String(input.date ?? "").slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return "Give me the date as YYYY-MM-DD.";

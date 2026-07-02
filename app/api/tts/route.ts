@@ -43,21 +43,78 @@ export async function GET() {
   if (!res.ok) return Response.json({ ok: false, error: `elevenlabs ${res.status}` });
   const data = await res.json();
   const active = await pickVoice(key);
-  return Response.json({
-    ok: true, active,
-    voices: (data.voices ?? []).map((v: { voice_id: string; name: string; category?: string }) =>
-      ({ id: v.voice_id, name: v.name, category: v.category })),
-  });
+  const voices: { id: string; name: string; category?: string }[] =
+    (data.voices ?? []).map((v: { voice_id: string; name: string; category?: string }) =>
+      ({ id: v.voice_id, name: v.name, category: v.category }));
+  // Speechify voices too — one dropdown, both providers (sp: prefix)
+  const spKey = process.env.SPEECHIFY_API_KEY;
+  if (spKey) {
+    try {
+      const spRes = await fetch("https://api.sws.speechify.com/v1/voices", { headers: { authorization: `Bearer ${spKey}` } });
+      if (spRes.ok) {
+        const spData = await spRes.json();
+        const raw: { id?: string; name?: string; display_name?: string; gender?: string; locale?: string }[] =
+          Array.isArray(spData) ? spData : spData.voices ?? [];
+        for (const v of raw) {
+          if (v.locale && !v.locale.startsWith("en")) continue;
+          const id = v.id ?? v.name; if (!id) continue;
+          voices.push({ id: `sp:${id}`, name: `${v.display_name ?? v.name ?? id} · Speechify`, category: "speechify" });
+        }
+      }
+    } catch { /* speechify optional */ }
+  }
+  // Saved call voice + his chosen call avatar
+  const { createClient } = await import("@supabase/supabase-js");
+  const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
+  const { data: st } = await db.from("jace_settings").select("call_voice, call_avatar_path").maybeSingle();
+  let avatar: string | null = null;
+  if (st?.call_avatar_path) {
+    const { data: signed } = await db.storage.from("files").createSignedUrl(st.call_avatar_path, 3600);
+    avatar = signed?.signedUrl ?? null;
+  }
+  return Response.json({ ok: true, active: st?.call_voice ?? active, avatar, voices });
 }
 
 export async function POST(req: NextRequest) {
   const { data: { user } } = await supabaseServer().auth.getUser();
   if (!user) return new Response("unauthorized", { status: 401 });
   const key = process.env.ELEVENLABS_API_KEY;
-  if (!key) return new Response("no tts key", { status: 503 });
-  const { text, voiceId, voiceName } = await req.json();
+  const { text, voiceId, voiceName, remember } = await req.json();
   if (!text?.trim()) return new Response("empty", { status: 400 });
-  let voice = voiceId as string | undefined;
+
+  const rememberVoice = async (v: string) => {
+    if (!remember) return;
+    const { createClient } = await import("@supabase/supabase-js");
+    const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } });
+    await db.from("jace_settings").update({ call_voice: v }).not("user_id", "is", null);
+  };
+
+  // Speechify voice? (sp:<id> — or env default when no ElevenLabs key at all)
+  const spKey = process.env.SPEECHIFY_API_KEY;
+  const requested = (voiceId as string | undefined) ?? "";
+  if (spKey && (requested.startsWith("sp:") || (!key && !requested))) {
+    const spVoice = requested.startsWith("sp:") ? requested.slice(3) : process.env.SPEECHIFY_VOICE_ID ?? "henry";
+    const spoken0 = String(text).replace(/```[\s\S]*?```/g, " code block omitted ").replace(/[*_#>`]/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").slice(0, 4500);
+    const models = [process.env.SPEECHIFY_MODEL, "simba-3.0", "simba-english", undefined].filter((m, i2, a2) => a2.indexOf(m) === i2);
+    for (const model of models) {
+      const spRes = await fetch("https://api.sws.speechify.com/v1/audio/speech", {
+        method: "POST",
+        headers: { authorization: `Bearer ${spKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ input: spoken0, voice_id: spVoice, ...(model ? { model } : {}), audio_format: "mp3" }),
+      });
+      if (!spRes.ok) continue;
+      const spData = await spRes.json();
+      if (spData.audio_data) {
+        await rememberVoice(requested || `sp:${spVoice}`);
+        return new Response(Buffer.from(spData.audio_data, "base64"), { headers: { "content-type": "audio/mpeg" } });
+      }
+    }
+    // fall through to ElevenLabs if Speechify failed
+  }
+
+  if (!key) return new Response("no tts key", { status: 503 });
+  let voice = requested.startsWith("sp:") ? undefined : (voiceId as string | undefined);
   if (!voice && voiceName) {
     const res0 = await fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": key } });
     if (res0.ok) {
@@ -68,6 +125,7 @@ export async function POST(req: NextRequest) {
   }
   if (!voice) voice = (await pickVoice(key)) ?? undefined;
   if (!voice) return new Response("no voice", { status: 503 });
+  await rememberVoice(voice);
 
   // Strip markdown for speech
   const spoken = String(text)

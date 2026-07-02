@@ -136,6 +136,17 @@ export default function ReadPage() {
 
   const playFrom = useCallback(async (item: Item, startIdx: number, paraList: string[]) => {
     const session = ++sessionRef.current;
+    // Lock-screen / control-center presence on the phone
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: item.title, artist: "Jace reads", album: "Read & Listen",
+        artwork: item.cover_url ? [{ src: item.cover_url, sizes: "220x290", type: "image/jpeg" }] : [{ src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" }],
+      });
+      navigator.mediaSession.setActionHandler("play", () => { audioRef.current?.play(); setPaused(false); });
+      navigator.mediaSession.setActionHandler("pause", () => { audioRef.current?.pause(); setPaused(true); });
+      navigator.mediaSession.setActionHandler("previoustrack", () => playFrom(item, Math.max(0, (sessionRef.current, startIdx) - 1), paraList));
+      navigator.mediaSession.setActionHandler("nexttrack", () => playFrom(item, Math.min(paraList.length - 1, startIdx + 1), paraList));
+    }
     let a = audioRef.current;
     if (!a) { a = new Audio(); a.setAttribute("playsinline", "true"); audioRef.current = a; }
     a.playbackRate = rate;

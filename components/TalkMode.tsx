@@ -20,9 +20,10 @@ export default function TalkMode({ onUserText, onClose }: Props) {
   const [lastReply, setLastReply] = useState("");
   const [voiceHint, setVoiceHint] = useState("");
   const [supported, setSupported] = useState(true);
-  const [voices, setVoices] = useState<{ name: string; category?: string }[]>([]);
+  const [voices, setVoices] = useState<{ id: string; name: string; category?: string }[]>([]);
   const [voiceName, setVoiceName] = useState<string>(() =>
     typeof window !== "undefined" ? localStorage.getItem("jace-voice") ?? "" : "");
+  const [avatar, setAvatar] = useState<string | null>(null);
   const recRef = useRef<any>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);   // ONE persistent element (iOS unlock)
   const closingRef = useRef(false);
@@ -33,7 +34,11 @@ export default function TalkMode({ onUserText, onClose }: Props) {
 
   useEffect(() => {
     fetch("/api/tts").then((r) => r.json())
-      .then((d) => setVoices((d.voices ?? []).map((v: { name: string; category?: string }) => ({ name: v.name, category: v.category }))))
+      .then((d) => {
+        setVoices((d.voices ?? []).map((v: { id: string; name: string; category?: string }) => ({ id: v.id, name: v.name, category: v.category })));
+        if (d.avatar) setAvatar(d.avatar);
+        if (!localStorage.getItem("jace-voice") && d.active) { setVoiceName(String(d.active)); }
+      })
       .catch(() => {});
     // Unlock the single audio element inside the opening tap's gesture window.
     const a = new Audio();
@@ -52,7 +57,12 @@ export default function TalkMode({ onUserText, onClose }: Props) {
     try {
       const res = await fetch("/api/tts", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: sentence, voiceName: localStorage.getItem("jace-voice") || undefined }),
+        body: JSON.stringify((() => {
+          const v = localStorage.getItem("jace-voice") || "";
+          return v.startsWith("sp:") || /^[A-Za-z0-9]{16,}$/.test(v)
+            ? { text: sentence, voiceId: v, remember: true }
+            : { text: sentence, voiceName: v || undefined, remember: true };
+        })()),
       });
       if (!res.ok) { console.error("[talk] tts:", await res.text()); setVoiceHint("voice hiccup — words on screen"); return null; }
       setVoiceHint("");
@@ -203,11 +213,12 @@ export default function TalkMode({ onUserText, onClose }: Props) {
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 80, background: "var(--bg)", display: "flex",
+    <div style={{ position: "fixed", inset: 0, zIndex: 80, display: "flex",
+      background: "linear-gradient(180deg, #fdfefe 0%, #eef4fb 55%, #e3edf9 100%)",
       flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
       {!supported ? (
-        <div style={{ textAlign: "center", maxWidth: 420 }}>
-          <p>This browser can't do live speech recognition — Safari and Chrome can. The rest of Jace works everywhere.</p>
+        <div style={{ textAlign: "center", maxWidth: 420, color: "#2b3a4a" }}>
+          <p>This browser can&apos;t do live speech recognition — Safari and Chrome can. The rest of Jace works everywhere.</p>
           <button className="send" style={{ width: "auto", padding: "8px 22px" }} onClick={close}>Back</button>
         </div>
       ) : (
@@ -219,38 +230,60 @@ export default function TalkMode({ onUserText, onClose }: Props) {
             onMouseDown={mobile ? holdStart : undefined}
             onMouseUp={mobile ? holdEnd : undefined}
             style={{
-              width: 150, height: 150, borderRadius: "50%",
-              background: phase === "listening" ? "var(--accent, #c0392b)" : "var(--ink)",
-              opacity: phase === "speaking" ? 0.9 : 0.8,
-              transform: phase === "listening" ? "scale(1.08)" : phase === "thinking" ? "scale(.88)" : "scale(1)",
-              transition: "all .4s ease", touchAction: "none", userSelect: "none", WebkitUserSelect: "none",
-              animation: phase === "speaking" ? "breathe 1.6s ease-in-out infinite" : "none",
+              width: 190, height: 190, borderRadius: "50%", position: "relative",
+              background: avatar
+                ? "radial-gradient(circle at 35% 30%, #cfe3ff 0%, #9cc3f7 60%, #7fb0f2 100%)"
+                : "radial-gradient(circle at 35% 30%, #bcd9ff 0%, #7fb0f2 55%, #5b96e8 100%)",
+              boxShadow: phase === "listening"
+                ? "0 0 70px 24px rgba(101,157,235,.5), inset 0 0 40px rgba(255,255,255,.55)"
+                : phase === "speaking"
+                ? "0 0 90px 30px rgba(101,157,235,.6), inset 0 0 44px rgba(255,255,255,.6)"
+                : "0 0 46px 14px rgba(101,157,235,.35), inset 0 0 36px rgba(255,255,255,.5)",
+              transform: phase === "listening" ? "scale(1.06)" : phase === "thinking" ? "scale(.94)" : "scale(1)",
+              transition: "all .45s ease", touchAction: "none", userSelect: "none", WebkitUserSelect: "none",
+              animation: phase === "speaking" ? "orbTalk 1.5s ease-in-out infinite"
+                : phase === "thinking" ? "orbThink 2.6s ease-in-out infinite"
+                : "orbBreathe 4s ease-in-out infinite",
               cursor: mobile ? "pointer" : "default",
-            }} />
-          <style>{`@keyframes breathe { 0%,100% { transform: scale(1);} 50% { transform: scale(1.08);} }`}</style>
-          <div style={{ minHeight: 100, marginTop: 30, maxWidth: 560, textAlign: "center" }}>
-            {liveText && <p style={{ color: "var(--ink)", fontSize: 17 }}>{liveText}</p>}
+              display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden",
+            }}>
+            {avatar && (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img src={avatar} alt="" draggable={false}
+                style={{ width: "86%", height: "86%", objectFit: "cover", borderRadius: "50%",
+                  opacity: 0.94, pointerEvents: "none" }} />
+            )}
+          </div>
+          <style>{`
+            @keyframes orbBreathe { 0%,100% { transform: scale(1);} 50% { transform: scale(1.035);} }
+            @keyframes orbTalk { 0%,100% { transform: scale(1);} 30% { transform: scale(1.07);} 65% { transform: scale(1.02);} }
+            @keyframes orbThink { 0%,100% { transform: scale(.94); opacity: 1;} 50% { transform: scale(.9); opacity: .85;} }
+          `}</style>
+          <div style={{ minHeight: 100, marginTop: 32, maxWidth: 560, textAlign: "center" }}>
+            {liveText && <p style={{ color: "#20364e", fontSize: 17 }}>{liveText}</p>}
             {!liveText && lastReply && (
-              <p style={{ color: phase === "speaking" ? "var(--ink)" : "var(--ink-soft)", fontSize: 15,
+              <p style={{ color: phase === "speaking" ? "#20364e" : "#7d92a8", fontSize: 15,
                 maxHeight: 180, overflowY: "auto", transition: "color .4s" }}>{lastReply}</p>
             )}
             {voiceHint && <p style={{ color: "#c0392b", fontSize: 12 }}>{voiceHint}</p>}
-            <p style={{ color: "var(--ink-soft)", fontSize: 14, fontWeight: 600 }}>{hints[phase]}</p>
+            <p style={{ color: "#8ba1b7", fontSize: 14, fontWeight: 600 }}>{hints[phase]}</p>
           </div>
           <button onClick={close} aria-label="end conversation" style={{
-            marginTop: 24, width: 52, height: 52, borderRadius: "50%",
-            background: "#c0392b", color: "#fff", fontSize: 18 }}>✕</button>
-          <p style={{ color: "var(--ink-soft)", fontSize: 12, marginTop: 12 }}>
+            marginTop: 24, width: 56, height: 56, borderRadius: "50%", border: "none", cursor: "pointer",
+            background: "#ff5f57", color: "#fff", fontSize: 18, boxShadow: "0 6px 18px rgba(255,95,87,.35)" }}>✕</button>
+          <p style={{ color: "#9db1c5", fontSize: 12, marginTop: 12 }}>
             Still the same conversation — everything we say lands in the thread.
           </p>
           {voices.length > 0 && (
             <select value={voiceName}
               onChange={(e) => { setVoiceName(e.target.value); localStorage.setItem("jace-voice", e.target.value); }}
-              style={{ marginTop: 10, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line)",
-                background: "var(--bg)", color: "var(--ink-soft)", fontSize: 13 }}>
+              style={{ marginTop: 10, padding: "6px 10px", borderRadius: 10, border: "1px solid #ccdcee",
+                background: "#ffffffcc", color: "#4a6076", fontSize: 13, maxWidth: 240 }}>
               <option value="">Voice: automatic</option>
               {voices.map((v) => (
-                <option key={v.name} value={v.name}>{v.name}{v.category === "premade" ? "" : ` (${v.category})`}</option>
+                <option key={v.id} value={v.category === "speechify" ? v.id : v.name}>
+                  {v.name}{v.category && v.category !== "premade" && v.category !== "speechify" ? ` (${v.category})` : ""}
+                </option>
               ))}
             </select>
           )}
