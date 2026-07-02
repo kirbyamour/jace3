@@ -288,6 +288,10 @@ export default function Chat() {
           <button className="newchat" onClick={() => openConv(null)}>＋ New chat</button>
           <button className="iconbtn" title="Search (⌘K)" onClick={() => { setSearchOpen(true); setQuery(""); }}>⌕</button>
         </header>
+        <div style={{ padding: "0 8px" }}>
+          <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/heartbeat">♥ Heartbeat</a>
+          <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/timeline">⧗ Timeline</a>
+        </div>
         <div className="convlist" onClick={() => setMenuFor(null)}>
           {convs.map((c) => {
             const g = groupLabel(c.updated_at);
