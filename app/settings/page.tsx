@@ -29,6 +29,12 @@ export default function Settings() {
       <p style={{ marginBottom: 4 }}><a href="/">← Jace</a> · <a href="/heartbeat">Heartbeat</a></p>
       <h1>Settings <span className="ms">{saved}</span></h1>
       <p style={{ color: "var(--ink-soft)" }}>Every autonomous capability, adjustable. He can always answer "why did you do that?"</p>
+      <div className="card" style={{ padding: 14, margin: "12px 0" }}>
+        <strong>Notifications on this device</strong>
+        <p style={{ color: "var(--ink-soft)", fontSize: 14, margin: "6px 0 10px" }}>Let Jace reach you here (phone or desktop) when he has something worth saying — same budget and quiet hours as Telegram.</p>
+        <button onClick={async () => { const { enablePush } = await import("@/components/PWA"); alert(await enablePush()); }}
+          style={{ padding: "9px 16px", borderRadius: 10, border: "none", background: "var(--accent)", color: "var(--bg)", cursor: "pointer" }}>Enable notifications</button>
+      </div>
       <div style={row}>
         <div><strong>Jace can text me first (Telegram)</strong>
           <div className="ms">Off = he only ever replies. On = meaningful check-ins, budgeted below.</div></div>

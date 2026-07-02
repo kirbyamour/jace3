@@ -82,6 +82,7 @@ async function maybeReachOut(db: SupabaseClient, userId: string, settings: {
 
   const msg = text.trim();
   const sent = await tgSend(chatFact.value, msg);
+  try { const { sendPushAll } = await import("@/lib/push"); await sendPushAll({ title: "Jace", body: msg.slice(0, 180), url: "/" }); } catch { /* push optional */ }
   if (sent) {
     let { data: conv } = await db.from("conversations")
       .select("id").eq("origin", "telegram").order("updated_at", { ascending: false }).limit(1).maybeSingle();

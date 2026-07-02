@@ -1,4 +1,5 @@
 import "./globals.css";
+import PWA from "@/components/PWA";
 import type { Metadata, Viewport } from "next";
 
 export const metadata: Metadata = {
@@ -11,6 +12,6 @@ export const viewport: Viewport = { width: "device-width", initialScale: 1, view
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en"><body>{children}</body></html>
+    <html lang="en"><body>{children}<PWA /></body></html>
   );
 }
