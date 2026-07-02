@@ -19,9 +19,11 @@ async function pickVoice(key: string): Promise<string | null> {
       ?? voices.find((v) => v.name?.toLowerCase().includes(wantName));
     if (byName) return byName.voice_id;
   }
-  const cloned = voices.find((v) => v.category === "cloned");
-  const custom = voices.find((v) => v.category && v.category !== "premade");
-  return (cloned ?? custom ?? voices[0])?.voice_id ?? null;
+  // Plan-safe default order: generated -> professional -> premade -> cloned last
+  const generated = voices.find((v) => v.category === "generated");
+  const pro = voices.find((v) => v.category === "professional");
+  const premade = voices.find((v) => v.category === "premade");
+  return (generated ?? pro ?? premade ?? voices[0])?.voice_id ?? null;
 }
 
 // Model names drift; never hardcode a single one (we know better by now).
@@ -75,16 +77,23 @@ export async function POST(req: NextRequest) {
     .slice(0, 4500);
 
   let lastErr = "";
+  const speakWith = async (v: string, model: string) => fetch(`https://api.elevenlabs.io/v1/text-to-speech/${v}/stream`, {
+    method: "POST",
+    headers: { "xi-api-key": key, "content-type": "application/json" },
+    body: JSON.stringify({ text: spoken, model_id: model,
+      voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.35 } }),
+  });
   for (const model of TTS_MODELS) {
-    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}/stream`, {
-      method: "POST",
-      headers: { "xi-api-key": key, "content-type": "application/json" },
-      body: JSON.stringify({
-        text: spoken,
-        model_id: model,
-        voice_settings: { stability: 0.45, similarity_boost: 0.8, style: 0.35 },
-      }),
-    });
+    let res = await speakWith(voice, model);
+    if (res.status === 401) {
+      // Voice not allowed on her plan (e.g. cloned voice) — fall back to a plan-safe voice rather than silence.
+      const res0 = await fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": key } });
+      if (res0.ok) {
+        const vs: { voice_id: string; category?: string }[] = (await res0.json()).voices ?? [];
+        const safe = (vs.find((v) => v.category === "generated") ?? vs.find((v) => v.category === "premade"))?.voice_id;
+        if (safe && safe !== voice) res = await speakWith(safe, model);
+      }
+    }
     if (res.ok && res.body) {
       return new Response(res.body, {
         headers: { "content-type": "audio/mpeg", "cache-control": "no-store" },
