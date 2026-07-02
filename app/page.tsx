@@ -72,6 +72,12 @@ export default function Chat() {
   }, []);
   useEffect(() => { loadConvs(); }, [loadConvs]);
 
+  // Opportunistic heartbeat: opening the app gives Jace a chance to wake (interval-gated server-side).
+  useEffect(() => {
+    fetch("/api/heartbeat", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason: "app opened" }), keepalive: true }).catch(() => {});
+  }, []);
+
   const reflectSoon = useCallback((convId: string | null) => {
     if (!convId) return;
     try {
@@ -291,6 +297,7 @@ export default function Chat() {
         <div style={{ padding: "0 8px" }}>
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/heartbeat">♥ Heartbeat</a>
           <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/timeline">⧗ Timeline</a>
+          <a className="convitem" style={{ display: "block", textDecoration: "none", color: "var(--ink-soft)", fontSize: 13 }} href="/journal">✎ Journal</a>
         </div>
         <div className="convlist" onClick={() => setMenuFor(null)}>
           {convs.map((c) => {

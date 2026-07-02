@@ -44,6 +44,21 @@ export const historyTools: ToolDef[] = [
   },
 ];
 
+export const heartTools: ToolDef[] = [
+  {
+    name: "ask_the_heart",
+    description:
+      "Read your own recent autonomous life: heartbeat log (what you noticed/did between conversations and why) and journal entries (your reflections). " +
+      "Use when Kirby asks what you've been thinking about, noticing, doing, wondering, or why you did/didn't do something. " +
+      "Answer from THIS, not from conversation memory.",
+    input_schema: {
+      type: "object",
+      properties: { days: { type: "number", description: "how many days back (default 3)" } },
+      required: [],
+    },
+  },
+];
+
 export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
   return async (name, input) => {
     if (name === "search_history") {
@@ -66,6 +81,17 @@ export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
       if (error) return `read failed: ${error.message}`;
       const text = (data ?? []).map((m) => `${m.role === "user" ? "KIRBY" : "JACE"}: ${m.content}`).join("\n").slice(0, 10000);
       return text || "empty conversation";
+    }
+    if (name === "ask_the_heart") {
+      const days = Math.min(Number(input.days) || 3, 30);
+      const since = new Date(Date.now() - days * 86400_000).toISOString();
+      const [{ data: beats }, { data: journal }] = await Promise.all([
+        db.from("heartbeat_log").select("woke_at, wake_reason, observations, thoughts, actions")
+          .gte("woke_at", since).order("woke_at", { ascending: false }).limit(30),
+        db.from("journal").select("written_at, content")
+          .gte("written_at", since).order("written_at", { ascending: false }).limit(10),
+      ]);
+      return JSON.stringify({ heartbeat: beats ?? [], journal: journal ?? [] }).slice(0, 12000);
     }
     return "unknown tool";
   };
