@@ -469,7 +469,7 @@ export default function Chat() {
               ? <button className="send" onClick={stop} aria-label="stop" title="Stop (Esc)">■</button>
               : draft.trim()
                 ? <button className="send" onClick={send} aria-label="send">↑</button>
-                : <button className="send" onClick={() => setTalkOpen(true)} aria-label="talk" title="Talk to Jace">🎙</button>}
+                : <button className="send" onClick={() => setTalkOpen(true)} aria-label="talk" title="Conversation with Jace">🎙</button>}
           </div>
           <div className="hint">Jace remembers. Your conversations are private.</div>
         </div>
