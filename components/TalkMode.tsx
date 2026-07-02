@@ -100,7 +100,7 @@ export default function TalkMode({ onUserText, onClose }: Props) {
       const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       recRef.current = rec;
       rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
-      rec.start(250);
+      rec.start();
       vadRef.current.recStart = Date.now();
       setDiag("● recording");
     } catch (e) {
@@ -340,7 +340,7 @@ export default function TalkMode({ onUserText, onClose }: Props) {
           </div>
           <button onClick={close} aria-label="end conversation" style={{
             marginTop: 24, width: 56, height: 56, borderRadius: "50%", border: "none", cursor: "pointer",
-            background: "#ff5f57", color: "#fff", fontSize: 18, boxShadow: "0 6px 18px rgba(255,95,87,.35)" }}>✕</button>
+            background: "#1c2733", color: "#fff", fontSize: 18, boxShadow: "0 6px 18px rgba(28,39,51,.3)" }}>✕</button>
           <p style={{ color: "#9db1c5", fontSize: 12, marginTop: 12 }}>
             One conversation, hands free — everything we say lands in the thread.
           </p>
