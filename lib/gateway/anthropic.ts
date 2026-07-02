@@ -44,8 +44,9 @@ async function callWithRetry(fn: () => Promise<Response>): Promise<Response> {
     catch (e) {
       const msg = e instanceof Error ? e.message : "";
       const retriable = /anthropic (429|529|500|503)/.test(msg);
-      if (!retriable || attempt >= 2) throw e;
-      await new Promise((r) => setTimeout(r, 2500 * (attempt + 1)));
+      if (!retriable || attempt >= 3) throw e;
+      // rate-limit windows reset each minute — wait long enough to reach the next one
+      await new Promise((r) => setTimeout(r, [3000, 9000, 25000][attempt] ?? 25000));
     }
   }
 }

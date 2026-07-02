@@ -44,7 +44,7 @@ export function nowBlock(tz = "America/New_York", lastExchangeAt?: string | null
   return `# Now\n${fmt} (${tz}) — ${tod}, ${season}.${gap}\nUse time naturally (a 6am hello is different from a 2am one; three quiet days deserve a different opening than three quiet minutes). Never announce the time mechanically.`;
 }
 
-const MAX_RECENT = 40;
+const MAX_RECENT = 18;
 
 export function loadPersona() {
   return { constitution: CONSTITUTION, exemplars: EXEMPLARS, version: PERSONA_VERSION };
