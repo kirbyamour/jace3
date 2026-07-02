@@ -117,8 +117,16 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
         const maxRounds = opts.maxToolRounds ?? 3;
         let pendingRes: Response | null = firstRes;
         for (let round = 0; round <= maxRounds; round++) {
-          const res = pendingRes ?? await connectRound(entry, key, system, apiMessages, opts, webOk);
-          pendingRes = null;
+          let res: Response;
+          if (pendingRes) { res = pendingRes; pendingRes = null; }
+          else {
+            try { res = await connectRound(entry, key, system, apiMessages, opts, webOk); }
+            catch {
+              await new Promise((r) => setTimeout(r, 1200));
+              try { res = await connectRound(entry, key, system, apiMessages, opts, webOk); }
+              catch (e2) { console.error("[anthropic] mid-reply round failed twice:", e2); break; }
+            }
+          }
           const { blocks, stopReason } = await consumeRound(
             res, (t) => controller.enqueue(t)
           );
