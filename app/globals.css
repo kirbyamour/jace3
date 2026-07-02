@@ -131,3 +131,12 @@ input, textarea { font: inherit; color: inherit; }
 .lab .card { border: 1px solid var(--line); border-radius: 12px; background: var(--bg); padding: 14px; }
 .lab .card h3 { margin: 0 0 4px; font-size: 14px; } .lab .card .ms { color: var(--ink-soft); font-size: 12px; }
 .lab .card .out { white-space: pre-wrap; font-size: 14px; margin-top: 8px; }
+
+/* mobile chat sanity: images and content never overflow the thread */
+.msg .body img { max-width: 100%; height: auto; border-radius: 14px; display: block; margin: 6px 0; }
+.msg .body { overflow-wrap: anywhere; }
+.msg .body table { display: block; max-width: 100%; overflow-x: auto; }
+@media (max-width: 700px) {
+  .msg .body img { max-height: 55vh; object-fit: contain; }
+  .msg { padding-left: 4px; padding-right: 4px; }
+}
