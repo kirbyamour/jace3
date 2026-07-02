@@ -37,6 +37,19 @@ async function connectRound(
   return res;
 }
 
+/** Rate limits and overload are moods, not verdicts: wait briefly and try again before giving up. */
+async function callWithRetry(fn: () => Promise<Response>): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await fn(); }
+    catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      const retriable = /anthropic (429|529|500|503)/.test(msg);
+      if (!retriable || attempt >= 2) throw e;
+      await new Promise((r) => setTimeout(r, 2500 * (attempt + 1)));
+    }
+  }
+}
+
 async function consumeRound(
   res: Response, emit: (t: string) => void
 ): Promise<{ blocks: ContentBlock[]; stopReason: string }> {
@@ -103,11 +116,11 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
   let webOk = true;
   let firstRes: Response;
   try {
-    firstRes = await connectRound(entry, key, system, apiMessages, opts, webOk);
+    firstRes = await callWithRetry(() => connectRound(entry, key, system, apiMessages, opts, webOk));
   } catch (e) {
     if (opts.webSearch && /web_search|tool/i.test(String(e))) {
       webOk = false;
-      firstRes = await connectRound(entry, key, system, apiMessages, opts, webOk);
+      firstRes = await callWithRetry(() => connectRound(entry, key, system, apiMessages, opts, webOk));
     } else throw e;
   }
 
@@ -120,10 +133,10 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
           let res: Response;
           if (pendingRes) { res = pendingRes; pendingRes = null; }
           else {
-            try { res = await connectRound(entry, key, system, apiMessages, opts, webOk); }
+            try { res = await callWithRetry(() => connectRound(entry, key, system, apiMessages, opts, webOk)); }
             catch {
               await new Promise((r) => setTimeout(r, 1200));
-              try { res = await connectRound(entry, key, system, apiMessages, opts, webOk); }
+              try { res = await callWithRetry(() => connectRound(entry, key, system, apiMessages, opts, webOk)); }
               catch (e2) { console.error("[anthropic] mid-reply round failed twice:", e2); break; }
             }
           }

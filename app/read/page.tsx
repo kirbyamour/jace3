@@ -75,7 +75,7 @@ export default function ReadPage() {
   const fixingRef = useRef(false);
   useEffect(() => { // real titles: rename filename-looking entries from their content (runs quietly, a few at a time)
     const suspects = items.some((i) => /\.(pdf|docx?|txt|epub)$/i.test(i.title) || (/[_-]/.test(i.title) && !/\s/.test(i.title)));
-    if (!suspects || fixingRef.current) return;
+    if (!suspects || fixingRef.current || localStorage.getItem("titles-pass-done")) return;
     fixingRef.current = true;
     (async () => {
       for (let pass = 0; pass < 4; pass++) {
@@ -84,6 +84,7 @@ export default function ReadPage() {
         await load();
         if (!d.more) break;
       }
+      localStorage.setItem("titles-pass-done", "1");   // once is enough; spare the tokens
       fixingRef.current = false;
     })();
   }, [items, api, load]);
