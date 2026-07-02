@@ -33,24 +33,24 @@ export function buildSystemPrompt(input: BuildInput): { system: string; personaV
   const facts = (input.profileFacts ?? [])
     .map((f) => `- ${f.key}: ${f.value}${(f.confidence ?? 1) < 0.8 ? " (unconfirmed — ask if it matters)" : ""}`)
     .join("\n");
-  const activeArcs = (input.arcs ?? []).filter((a) => a.status === "active");
-  const otherArcs = (input.arcs ?? []).filter((a) => a.status !== "active");
-  const arcLines = [
-    ...activeArcs.map((a) => `- [${a.kind}] ${a.name}: ${a.summary}`),
-    ...otherArcs.slice(0, 6).map((a) => `- [${a.kind}, ${a.status}] ${a.name}: ${a.summary}`),
-  ].join("\n");
-  const epLines = (input.episodes ?? [])
-    .map((e) => `- (${e.happened_on}) ${e.title}: ${e.summary}`)
+  const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+  const arcLines = (input.arcs ?? [])
+    .filter((a) => a.status === "active").slice(0, 10)
+    .map((a) => `- [${a.kind}] ${a.name}: ${clip(a.summary, 180)}`)
+    .join("\n");
+  const epLines = (input.episodes ?? []).slice(0, 4)
+    .map((e) => `- (${e.happened_on}) ${e.title}: ${clip(e.summary, 160)}`)
     .join("\n");
   const parts = [
     CONSTITUTION,
     EXEMPLARS,
     `# Today\nDate: ${today}`,
-    input.lifeStory ? `# Her life as you know it (lived understanding — never recite, just know)\n${input.lifeStory}` : "",
+    input.lifeStory ? `# Her life as you know it (lived understanding — never recite, just know)\n${input.lifeStory.split(/\s+/).slice(0, 350).join(" ")}` : "",
     arcLines ? `# Open storylines\n${arcLines}` : "",
     epLines ? `# Moments that may matter right now\n${epLines}` : "",
     facts ? `# Profile (living facts — deploy silently, never recite)\n${facts}` : "",
     input.voiceMode ? "# Mode\nVoice conversation: shorter beats, no markdown, verbal paragraphing." : "",
+    "# Attention\nEverything above is background. The LIVE CONVERSATION below is foreground — respond to what Kirby is saying right now, in this moment. Memory serves the reply; it never replaces attention.",
   ].filter(Boolean);
   return { system: parts.join("\n\n---\n\n"), personaVersion: PERSONA_VERSION };
 }
