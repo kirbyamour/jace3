@@ -12,11 +12,10 @@ function systemPayload(system: string | SystemBlock[]) {
   return system.map((b) => ({ type: "text", text: b.text, ...(b.cache ? { cache_control: { type: "ephemeral" } } : {}) }));
 }
 
-async function streamRound(
+async function connectRound(
   entry: ModelEntry, key: string, system: string | SystemBlock[],
-  messages: unknown[], opts: GenerateOptions,
-  emit: (t: string) => void
-): Promise<{ blocks: ContentBlock[]; stopReason: string }> {
+  messages: unknown[], opts: GenerateOptions, withWebSearch: boolean
+): Promise<Response> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
@@ -27,16 +26,21 @@ async function streamRound(
       system: systemPayload(system),
       messages,
       stream: true,
-      ...((opts.tools?.length || opts.webSearch) ? { tools: [
+      ...((opts.tools?.length || (opts.webSearch && withWebSearch)) ? { tools: [
         ...(opts.tools ?? []),
-        ...(opts.webSearch ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 } as unknown as import("./types").ToolDef] : []),
+        ...((opts.webSearch && withWebSearch) ? [{ type: "web_search_20250305", name: "web_search", max_uses: 3 } as unknown as import("./types").ToolDef] : []),
       ] } : {}),
     }),
     signal: opts.signal ?? AbortSignal.timeout(50_000),
   });
   if (!res.ok || !res.body) throw new Error(`anthropic ${res.status}: ${await res.text()}`);
+  return res;
+}
 
-  const reader = res.body.getReader();
+async function consumeRound(
+  res: Response, emit: (t: string) => void
+): Promise<{ blocks: ContentBlock[]; stopReason: string }> {
+  const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   const blocks: ContentBlock[] = [];
@@ -94,14 +98,29 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
     .filter((m) => m.role !== "system")
     .map((m: ChatMessage) => ({ role: m.role, content: m.content }));
 
+  // Connect the first round EAGERLY so failures reach the gateway's fallback chain.
+  // If web search is refused by the org, degrade gracefully and retry without it.
+  let webOk = true;
+  let firstRes: Response;
+  try {
+    firstRes = await connectRound(entry, key, system, apiMessages, opts, webOk);
+  } catch (e) {
+    if (opts.webSearch && /web_search|tool/i.test(String(e))) {
+      webOk = false;
+      firstRes = await connectRound(entry, key, system, apiMessages, opts, webOk);
+    } else throw e;
+  }
+
   return new ReadableStream<string>({
     async start(controller) {
       try {
         const maxRounds = opts.maxToolRounds ?? 3;
+        let pendingRes: Response | null = firstRes;
         for (let round = 0; round <= maxRounds; round++) {
-          const { blocks, stopReason } = await streamRound(
-            entry, key, system, apiMessages, opts,
-            (t) => controller.enqueue(t)
+          const res = pendingRes ?? await connectRound(entry, key, system, apiMessages, opts, webOk);
+          pendingRes = null;
+          const { blocks, stopReason } = await consumeRound(
+            res, (t) => controller.enqueue(t)
           );
           if (stopReason === "pause_turn") { apiMessages.push({ role: "assistant", content: blocks }); continue; }
           if (stopReason !== "tool_use" || !opts.runTool || round === maxRounds) break;
