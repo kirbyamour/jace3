@@ -29,6 +29,8 @@ export default function ReadPage() {
   const [idx, setIdx] = useState(0);
   const [paused, setPaused] = useState(false);
   const [rate, setRate] = useState(1);
+  const [showText, setShowText] = useState(true);
+  const paraRefs = useRef<(HTMLParagraphElement | null)[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const cacheRef = useRef<Map<string, string>>(new Map()); // `${id}:${i}` -> objectURL
   const sessionRef = useRef(0);
@@ -133,6 +135,9 @@ export default function ReadPage() {
     playFrom(playing, target, paras);
   }, [playing, paras, idx, playFrom]);
   useEffect(() => { if (audioRef.current) audioRef.current.playbackRate = rate; }, [rate]);
+  useEffect(() => {
+    if (playing && showText) paraRefs.current[idx]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [idx, playing, showText]);
 
   // ---- add flows ----
   const addUrl = useCallback(async () => {
@@ -175,12 +180,22 @@ export default function ReadPage() {
           </button>
         ))}
         {folders.map((f) => (
-          <button key={f.id} onClick={() => setActiveFolder(f.id)}
-            style={{ padding: "6px 14px", borderRadius: 20, border: "1px solid var(--line)", cursor: "pointer",
-              background: activeFolder === f.id ? "var(--accent)" : "var(--pill-bg)",
-              color: activeFolder === f.id ? "var(--bg)" : "var(--ink)" }}>
-            {f.emoji ? f.emoji + " " : ""}{f.name}
-          </button>
+          <span key={f.id} style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+            <button onClick={() => setActiveFolder(f.id)}
+              style={{ padding: "6px 14px", borderRadius: 20, border: "1px solid var(--line)", cursor: "pointer",
+                background: activeFolder === f.id ? "var(--accent)" : "var(--pill-bg)",
+                color: activeFolder === f.id ? "var(--bg)" : "var(--ink)" }}>
+              {f.emoji ? f.emoji + " " : ""}{f.name}
+            </button>
+            {activeFolder === f.id && (
+              <>
+                <button title="Rename folder" onClick={async () => { const n = prompt("Rename folder", f.name); if (n?.trim()) { await api({ action: "folder_rename", id: f.id, name: n.trim() }); load(); } }}
+                  style={{ border: "none", background: "none", color: "var(--ink-soft)", cursor: "pointer", fontSize: 13 }}>✎</button>
+                <button title="Delete folder (keeps its documents)" onClick={async () => { if (confirm(`Delete folder "${f.name}"? Its documents stay in your library.`)) { await api({ action: "folder_delete", id: f.id }); setActiveFolder("all"); load(); } }}
+                  style={{ border: "none", background: "none", color: "var(--ink-soft)", cursor: "pointer", fontSize: 13 }}>✕</button>
+              </>
+            )}
+          </span>
         ))}
         <button onClick={async () => { const n = prompt("Folder name"); if (n) { await api({ action: "folder_add", name: n }); load(); } }}
           style={{ padding: "6px 12px", borderRadius: 20, border: "1px dashed var(--line)", background: "none", color: "var(--ink-soft)", cursor: "pointer" }}>＋ folder</button>
@@ -239,9 +254,26 @@ export default function ReadPage() {
         </div>
       )}
 
+      {/* follow-along transcript while listening */}
+      {playing && showText && (
+        <div style={{ margin: "6px 0 20px" }}>
+          <p style={{ color: "var(--ink-soft)", fontSize: 13 }}>Tap any paragraph to jump there.</p>
+          {paras.map((para, i) => (
+            <p key={i} ref={(el) => { paraRefs.current[i] = el; }}
+              onClick={() => { if (playing) playFrom(playing, i, paras); }}
+              style={{ cursor: "pointer", lineHeight: 1.65, fontSize: 17, padding: "10px 14px", borderRadius: 12,
+                background: i === idx ? "var(--bubble)" : "transparent",
+                color: i === idx ? "var(--ink)" : i < idx ? "var(--ink-soft)" : "var(--ink)",
+                opacity: i < idx ? 0.65 : 1, transition: "background .3s" }}>
+              {para}
+            </p>
+          ))}
+        </div>
+      )}
+
       {/* items */}
-      {visible.length === 0 && items.length > 0 && <p style={{ color: "var(--ink-soft)" }}>Nothing here yet.</p>}
-      {visible.map((it) => (
+      {!playing && visible.length === 0 && items.length > 0 && <p style={{ color: "var(--ink-soft)" }}>Nothing here yet.</p>}
+      {(playing && showText ? [] : visible).map((it) => (
         <div key={it.id} className="card" style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 16px", marginBottom: 10 }}>
           <button onClick={() => startListening(it)} disabled={busy === it.id}
             title={it.progress_seconds > 0 ? "Resume" : "Listen"}
@@ -256,7 +288,15 @@ export default function ReadPage() {
               {it.progress_seconds > 0 && it.status !== "done" ? " · in progress" : ""}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          <div style={{ display: "flex", gap: 6, flexShrink: 0, alignItems: "center", flexWrap: "wrap" }}>
+            <select value={it.folder_id ?? ""} title="Move to folder"
+              onChange={async (e) => { await api({ action: "update", id: it.id, folder_id: e.target.value || null }); load(); }}
+              style={{ padding: "6px 6px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--pill-bg)", color: "var(--ink)", fontSize: 13, maxWidth: 110 }}>
+              <option value="">No folder</option>
+              {folders.map((f) => <option key={f.id} value={f.id}>{f.emoji ? f.emoji + " " : ""}{f.name}</option>)}
+            </select>
+            <button onClick={async () => { const n = prompt("Rename", it.title); if (n?.trim()) { await api({ action: "update", id: it.id, title: n.trim() }); load(); } }}
+              title="Rename" style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--pill-bg)", color: "var(--ink)", cursor: "pointer", fontSize: 13 }}>✎</button>
             <button onClick={() => prepare(it, "standard")} disabled={busy === it.id} title="Clean up for listening"
               style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--pill-bg)", color: "var(--ink)", cursor: "pointer", fontSize: 13 }}>✨</button>
             <button onClick={() => prepare(it, "clinical")} disabled={busy === it.id} title="Clinical clean-up (studies: p-values, CIs spoken)"
@@ -275,9 +315,11 @@ export default function ReadPage() {
               <strong style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{playing.title}</strong>
               <span style={{ color: "var(--ink-soft)", fontSize: 13, flexShrink: 0 }}>{idx + 1} / {paras.length}</span>
             </div>
-            <div style={{ color: "var(--ink-soft)", fontSize: 13, margin: "6px 0 10px", maxHeight: 38, overflow: "hidden" }}>
-              {paras[idx]?.slice(0, 140)}…
-            </div>
+            {!showText && (
+              <div style={{ color: "var(--ink-soft)", fontSize: 13, margin: "6px 0 10px", maxHeight: 38, overflow: "hidden" }}>
+                {paras[idx]?.slice(0, 140)}…
+              </div>
+            )}
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <button onClick={() => skip(-1)} style={{ width: 42, height: 42, borderRadius: 21, border: "1px solid var(--line)", background: "var(--pill-bg)", color: "var(--ink)", cursor: "pointer" }}>⏮</button>
               <button onClick={togglePause} style={{ width: 54, height: 54, borderRadius: 27, border: "none", background: "var(--accent)", color: "var(--bg)", fontSize: 20, cursor: "pointer" }}>{paused ? "▶" : "⏸"}</button>
@@ -291,6 +333,9 @@ export default function ReadPage() {
                       color: rate === r ? "var(--bg)" : "var(--ink)" }}>{r}×</button>
                 ))}
               </div>
+              <button onClick={() => setShowText(!showText)} title="Follow along with the text"
+                style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line)", cursor: "pointer", fontSize: 13,
+                  background: showText ? "var(--accent)" : "var(--pill-bg)", color: showText ? "var(--bg)" : "var(--ink)" }}>text</button>
               <button onClick={stop} style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--pill-bg)", color: "var(--ink-soft)", cursor: "pointer", fontSize: 13 }}>close</button>
             </div>
           </div>

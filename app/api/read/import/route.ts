@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
   const dump = await res.json();
 
   const db = admin();
-  const report = { folders: 0, items: 0, files: 0, skipped: 0, errors: [] as string[] };
+  const report: { folders: number; items: number; files: number; skipped: number; refiled?: number; errors: string[] } = { folders: 0, items: 0, files: 0, skipped: 0, refiled: 0, errors: [] };
 
   // ---- folders (accept a few likely shapes) ----
   const folderRows: LegacyRow[] = dump.folders ?? dump.reading_folders ?? dump.reading_queue_folders ?? dump.chat_folders ?? [];
@@ -57,13 +57,27 @@ export async function POST(req: NextRequest) {
   for (const r of itemRows) {
     const legacy = String(r.id ?? "");
     if (!legacy) continue;
-    const { data: existing } = await db.from("reading_items").select("id").eq("legacy_id", legacy).maybeSingle();
-    if (existing) { report.skipped++; continue; }
 
     const title = s(r.title) ?? s(r.name) ?? s(r.file_name) ?? "Untitled";
     const url = s(r.url) ?? s(r.link) ?? s(r.source_url);
     const fileUrl = s(r.signed_url) ?? s(r.file_url) ?? s(r.download_url);
     const legacyFolder = (s(r.folder_id) ?? s(r.folder))?.toLowerCase() ?? null;
+    if (legacyFolder && !folderMap.has(legacyFolder)) {
+      const pretty = legacyFolder === "ai" ? "AI" : legacyFolder.charAt(0).toUpperCase() + legacyFolder.slice(1);
+      await registerFolder(legacyFolder, pretty, null, []);
+    }
+
+    // Already imported? Repair pass: re-file into its folder if we missed it before.
+    const { data: existing } = await db.from("reading_items").select("id, folder_id").eq("legacy_id", legacy).maybeSingle();
+    if (existing) {
+      const want = legacyFolder ? folderMap.get(legacyFolder) ?? null : null;
+      if (want && existing.folder_id !== want) {
+        await db.from("reading_items").update({ folder_id: want }).eq("id", existing.id);
+        report.refiled = (report.refiled ?? 0) + 1;
+      } else report.skipped++;
+      continue;
+    }
+
     // 2.0's cleanup output lived in edited_paragraphs — the gold we're rescuing
     const paras = Array.isArray(r.edited_paragraphs) ? (r.edited_paragraphs as unknown[]).filter((p) => typeof p === "string") as string[] : [];
     const cleaned: string | null = paras.length ? paras.join("\n\n") : s(r.cleaned_text);
@@ -89,10 +103,6 @@ export async function POST(req: NextRequest) {
       } catch (e) { report.errors.push(`${title}: ${e instanceof Error ? e.message : "file error"}`); }
     }
 
-    if (legacyFolder && !folderMap.has(legacyFolder)) {
-      const pretty = legacyFolder === "ai" ? "AI" : legacyFolder.charAt(0).toUpperCase() + legacyFolder.slice(1);
-      await registerFolder(legacyFolder, pretty, null, []);
-    }
     const st = s(r.status);
     const done = r.done === true || r.is_done === true || st === "done" || st === "completed" || st === "read";
     const { error } = await db.from("reading_items").insert({
