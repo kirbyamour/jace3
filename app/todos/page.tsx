@@ -39,6 +39,39 @@ export default function Todos() {
   const [mDay, setMDay] = useState(() => new Date());
   const [moveMenu, setMoveMenu] = useState<string | null>(null); // todo id with open move menu
   const [openLists, setOpenLists] = useState<Record<string, boolean>>({});
+  const [listOrder, setListOrder] = useState<string[]>([]);
+  useEffect(() => {
+    sb.from("jace_settings").select("someday_list_order").maybeSingle()
+      .then(({ data }) => { if (Array.isArray(data?.someday_list_order)) setListOrder(data!.someday_list_order as string[]); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const saveListOrder = async (names: string[]) => {
+    setListOrder(names);
+    await sb.from("jace_settings").update({ someday_list_order: names }).not("user_id", "is", null);
+  };
+  const orderNames = (names: string[]) => {
+    const idx = (n: string) => { const i = listOrder.indexOf(n); return i === -1 ? 9999 : i; };
+    return [...names].sort((a, b) => idx(a) - idx(b) || (a === "Someday" ? -1 : b === "Someday" ? 1 : a.localeCompare(b)));
+  };
+  const shiftList = (names: string[], name: string, dir: -1 | 1) => {
+    const cur = orderNames(names);
+    const i = cur.indexOf(name); const j = i + dir;
+    if (j < 0 || j >= cur.length) return;
+    [cur[i], cur[j]] = [cur[j], cur[i]];
+    saveListOrder(cur);
+  };
+  async function renameList(oldName: string, group: Todo[]) {
+    const n = prompt("Rename list", oldName)?.trim();
+    if (!n || n === oldName) return;
+    for (const t of group) {
+      const newText = oldName === "Someday"
+        ? "[" + n + "] " + t.text
+        : t.text.replace(/^\[[^\]]{1,40}\]\s*/, "[" + n + "] ");
+      setTodos((x) => x.map((y) => (y.id === t.id ? { ...y, text: newText } : y)));
+      await sb.from("todos").update({ text: newText }).eq("id", t.id);
+    }
+    if (listOrder.includes(oldName)) saveListOrder(listOrder.map((x) => (x === oldName ? n : x)));
+  }
   useEffect(() => {
     const check = () => setMobile(window.innerWidth < 700);
     check(); window.addEventListener("resize", check);
@@ -222,16 +255,24 @@ export default function Todos() {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(t);
     }
-    const names = [...groups.keys()].sort((a, b) => (a === "Someday" ? -1 : b === "Someday" ? 1 : a.localeCompare(b)));
+    const names = orderNames([...groups.keys()]);
     const strip = (s: string) => s.replace(/^\[[^\]]{1,40}\]\s*/, "");
     return (
-      <div style={{ display: "flex", overflowX: "auto", alignItems: "flex-start", paddingBottom: 24, WebkitOverflowScrolling: "touch" as never, touchAction: "pan-x pan-y" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", paddingBottom: 24, rowGap: 18 }}>
         {names.map((name) => (
-          <div key={name} style={{ minWidth: 220, maxWidth: 260, padding: "0 12px", borderRight: "1px solid var(--line)", flexShrink: 0, maxHeight: "72dvh", overflowY: "auto", WebkitOverflowScrolling: "touch" as never }}
+          <div key={name} className="sdlist" style={{ width: 240, padding: "0 12px", borderRight: "1px solid var(--line)", flexShrink: 0, maxHeight: "60dvh", overflowY: "auto", WebkitOverflowScrolling: "touch" as never }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => { if (dragId) { retagAndMove(dragId, name === "Someday" ? null : name); setDragId(null); } }}>
-            <h3 style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, paddingBottom: 4 }}>
-              {name} <span style={{ color: "var(--ink-soft)", fontWeight: 400, fontSize: 12 }}>{groups.get(name)!.length}</span>
+            <h3 style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, paddingBottom: 4, display: "flex", alignItems: "center", gap: 4 }}>
+              <span onDoubleClick={() => renameList(name, groups.get(name)!)} style={{ cursor: "text" }} title="Double-click to rename">{name}</span>
+              <span style={{ color: "var(--ink-soft)", fontWeight: 400, fontSize: 12 }}>{groups.get(name)!.length}</span>
+              <span style={{ flex: 1 }} />
+              <button className="listctl" title="Rename list" onClick={() => renameList(name, groups.get(name)!)}
+                style={{ border: "none", background: "none", color: "var(--ink-soft)", cursor: "pointer", fontSize: 12, padding: 2 }}>✎</button>
+              <button className="listctl" title="Move list left" onClick={() => shiftList(names, name, -1)}
+                style={{ border: "none", background: "none", color: "var(--ink-soft)", cursor: "pointer", fontSize: 12, padding: 2 }}>‹</button>
+              <button className="listctl" title="Move list right" onClick={() => shiftList(names, name, 1)}
+                style={{ border: "none", background: "none", color: "var(--ink-soft)", cursor: "pointer", fontSize: 12, padding: 2 }}>›</button>
             </h3>
             {groups.get(name)!.sort((a, b) => Number(a.done) - Number(b.done) || a.position - b.position).map((t) => (
               <div key={t.id} draggable onDragStart={() => setDragId(t.id)}
@@ -368,12 +409,17 @@ export default function Todos() {
 
         <div style={{ borderTop: "2px solid var(--line)", marginTop: 10, paddingTop: 12 }}>
           <h3 style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--ink-soft)", margin: "0 0 8px" }}>Lists</h3>
-          {[...groups.keys()].sort((a, b) => (a === "Someday" ? -1 : b === "Someday" ? 1 : a.localeCompare(b))).map((name) => (
+          {orderNames([...groups.keys()]).map((name, _i, allNames) => (
             <div key={name} style={{ marginBottom: 4 }}>
-              <button onClick={() => setOpenLists((o) => ({ ...o, [name]: !o[name] }))}
-                style={{ width: "100%", textAlign: "left", border: "none", background: "none", color: "var(--ink)", fontSize: 15, fontWeight: 600, padding: "8px 0", display: "flex", justifyContent: "space-between" }}>
-                <span>{name}</span><span style={{ color: "var(--ink-soft)", fontWeight: 400 }}>{groups.get(name)!.length} {openLists[name] ? "▾" : "▸"}</span>
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <button onClick={() => setOpenLists((o) => ({ ...o, [name]: !o[name] }))}
+                  style={{ flex: 1, textAlign: "left", border: "none", background: "none", color: "var(--ink)", fontSize: 15, fontWeight: 600, padding: "8px 0", display: "flex", justifyContent: "space-between" }}>
+                  <span>{name}</span><span style={{ color: "var(--ink-soft)", fontWeight: 400 }}>{groups.get(name)!.length} {openLists[name] ? "▾" : "▸"}</span>
+                </button>
+                <button onClick={() => renameList(name, groups.get(name)!)} style={{ border: "none", background: "none", color: "var(--ink-soft)", fontSize: 14, padding: "4px 6px" }}>✎</button>
+                <button onClick={() => shiftList(allNames, name, -1)} style={{ border: "none", background: "none", color: "var(--ink-soft)", fontSize: 16, padding: "4px 6px" }}>↑</button>
+                <button onClick={() => shiftList(allNames, name, 1)} style={{ border: "none", background: "none", color: "var(--ink-soft)", fontSize: 16, padding: "4px 6px" }}>↓</button>
+              </div>
               {openLists[name] && (
                 <div style={{ paddingLeft: 4 }}>
                   {groups.get(name)!.sort((a, b) => Number(a.done) - Number(b.done) || a.position - b.position).map((t) => mRow(t, true))}
