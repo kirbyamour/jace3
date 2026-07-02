@@ -12,7 +12,36 @@ export type BuildInput = {
   episodes?: { title: string; summary: string; happened_on: string }[];
   todayISO?: string;
   voiceMode?: boolean;
+  lastExchangeAt?: string | null;   // previous message in this thread
+  timezone?: string;
 };
+
+export function humanGap(fromISO: string, now = new Date()): string {
+  const mins = Math.round((now.getTime() - new Date(fromISO).getTime()) / 60000);
+  if (mins < 2) return "moments ago";
+  if (mins < 60) return `${mins} minutes ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `about ${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  if (days < 14) return `${days} day${days === 1 ? "" : "s"} ago`;
+  const weeks = Math.round(days / 7);
+  if (days < 60) return `about ${weeks} weeks ago`;
+  return `about ${Math.round(days / 30)} months ago`;
+}
+
+export function nowBlock(tz = "America/New_York", lastExchangeAt?: string | null): string {
+  const now = new Date();
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, weekday: "long", year: "numeric", month: "long", day: "numeric",
+    hour: "numeric", minute: "2-digit",
+  }).format(now);
+  const hour = Number(new Intl.DateTimeFormat("en-US", { hour: "numeric", hour12: false, timeZone: tz }).format(now));
+  const tod = hour < 5 ? "the middle of the night" : hour < 12 ? "morning" : hour < 17 ? "afternoon" : hour < 21 ? "evening" : "late evening";
+  const month = Number(new Intl.DateTimeFormat("en-US", { month: "numeric", timeZone: tz }).format(now));
+  const season = month <= 2 || month === 12 ? "winter" : month <= 5 ? "spring" : month <= 8 ? "summer" : "fall";
+  const gap = lastExchangeAt ? `\nTime since your last exchange in this thread: ${humanGap(lastExchangeAt, now)}.` : "";
+  return `# Now\n${fmt} (${tz}) — ${tod}, ${season}.${gap}\nUse time naturally (a 6am hello is different from a 2am one; three quiet days deserve a different opening than three quiet minutes). Never announce the time mechanically.`;
+}
 
 const MAX_RECENT = 40;
 
@@ -30,6 +59,7 @@ export function buildSystemBlocks(input: BuildInput): { blocks: { text: string; 
 
 export function buildSystemPrompt(input: BuildInput): { system: string; personaVersion: string } {
   const today = input.todayISO ?? new Date().toISOString().slice(0, 10);
+  const nowSection = input.todayISO ? `# Today\nDate: ${today}` : nowBlock(input.timezone, input.lastExchangeAt);
   const facts = (input.profileFacts ?? [])
     .map((f) => `- ${f.key}: ${f.value}${(f.confidence ?? 1) < 0.8 ? " (unconfirmed — ask if it matters)" : ""}`)
     .join("\n");
@@ -44,7 +74,7 @@ export function buildSystemPrompt(input: BuildInput): { system: string; personaV
   const parts = [
     CONSTITUTION,
     EXEMPLARS,
-    `# Today\nDate: ${today}`,
+    nowSection,
     input.lifeStory ? `# Her life as you know it (lived understanding — never recite, just know)\n${input.lifeStory.split(/\s+/).slice(0, 350).join(" ")}` : "",
     arcLines ? `# Open storylines\n${arcLines}` : "",
     epLines ? `# Moments that may matter right now\n${epLines}` : "",

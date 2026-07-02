@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
     await db.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
 
     const [{ data: history }, { data: facts }, { data: lifeStory }, { data: arcs }, { data: eps }] = await Promise.all([
-      db.from("messages").select("role, content").eq("conversation_id", conv.id)
+      db.from("messages").select("role, content, created_at").eq("conversation_id", conv.id)
         .order("created_at", { ascending: true }).limit(60),
       db.from("profile_facts").select("key, value, confidence").eq("user_id", userId).eq("tombstoned", false)
         .is("superseded_by", null).order("confidence", { ascending: false }).limit(24),
@@ -59,11 +59,15 @@ export async function POST(req: NextRequest) {
       db.rpc("relevant_episodes_for", { uid: userId, q: text.slice(0, 200), max_rows: 4 }),
     ]);
 
-    const recent = trimRecent((history ?? []) as ChatMessage[]);
+    const historyArr = (history ?? []) as (ChatMessage & { created_at?: string })[];
+    // second-to-last = the exchange before the message that just arrived
+    const lastExchangeAt = historyArr.length >= 2 ? historyArr[historyArr.length - 2].created_at ?? null : null;
+    const recent = trimRecent(historyArr as ChatMessage[]);
     const { blocks, personaVersion } = buildSystemBlocks({
       recentMessages: recent, profileFacts: facts ?? [],
       lifeStory: lifeStory?.content ?? null, arcs: arcs ?? [], episodes: eps ?? [],
       voiceMode: false,
+      lastExchangeAt,
     });
     blocks.push({ text: "# Channel\nTelegram: keep replies to a few short paragraphs at most — this is texting, not the app. Same you, smaller room." });
 

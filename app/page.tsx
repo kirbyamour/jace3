@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { supabaseBrowser } from "@/lib/supabase/client";
+import TalkMode from "@/components/TalkMode";
 
 type Conv = { id: string; title: string; updated_at: string; created_at: string; archived: boolean };
 type Msg = { id: string; role: "user" | "assistant"; content: string; parent_id: string | null; created_at: string };
@@ -55,6 +56,7 @@ export default function Chat() {
   const [editing, setEditing] = useState<string | null>(null);
   const [editVal, setEditVal] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [talkOpen, setTalkOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[]>([]);
   const [flashId, setFlashId] = useState<string | null>(null);
@@ -122,7 +124,8 @@ export default function Chat() {
     if (current) localStorage.setItem(`branch-${current}`, JSON.stringify(next));
   }
 
-  async function runStream(body: Record<string, unknown>, placeholderParent: string | null) {
+  async function runStream(body: Record<string, unknown>, placeholderParent: string | null): Promise<string> {
+    let finalText = "";
     setStreaming(true); setStick(true);
     const localAsst: Msg = { id: `local-a-${Date.now()}`, role: "assistant", content: "",
       parent_id: placeholderParent, created_at: new Date().toISOString() };
@@ -137,6 +140,7 @@ export default function Chat() {
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let lastToken = Date.now();
+      // finalText captured for voice mode
       const watchdog = setInterval(() => {
         if (Date.now() - lastToken > 75000) { clearInterval(watchdog); abortRef.current?.abort(); }
       }, 5000);
@@ -173,7 +177,7 @@ export default function Chat() {
             continue;
           }
           lastToken = Date.now();
-          acc += JSON.parse(dataLine.slice(5));
+          acc += JSON.parse(dataLine.slice(5)); finalText = acc;
           setMsgs((m) => m.map((x) => (x.id === localAsst.id ? { ...x, content: acc } : x)));
         }
       }
@@ -191,6 +195,7 @@ export default function Chat() {
       setStreaming(false); loadConvs();
       const cid = (current ?? "") as string; if (cid) cache.current.delete(cid);
     }
+    return finalText;
   }
 
   async function send() {
@@ -219,6 +224,15 @@ export default function Chat() {
   async function regenerate(assistantMsg: Msg) {
     if (streaming || !assistantMsg.parent_id) return;
     await runStream({ conversationId: current, regenerateOf: assistantMsg.parent_id }, assistantMsg.parent_id);
+  }
+
+  async function voiceTurn(text: string): Promise<string> {
+    const parentId = visible.length ? visible[visible.length - 1].id : null;
+    const realParent = parentId && !parentId.startsWith("local-") ? parentId : null;
+    const localUser: Msg = { id: `local-u-${Date.now()}`, role: "user", content: text,
+      parent_id: realParent, created_at: new Date().toISOString() };
+    setMsgs((m) => [...m, localUser]);
+    return await runStream({ conversationId: current, content: text, parentId: realParent, voiceMode: true }, null);
   }
 
   function stop() { abortRef.current?.abort(); setStreaming(false); }
@@ -398,12 +412,15 @@ export default function Chat() {
               onChange={(e) => setDraft(e.target.value)} onInput={autogrow} onKeyDown={composerKey} />
             {streaming
               ? <button className="send" onClick={stop} aria-label="stop" title="Stop (Esc)">■</button>
-              : <button className="send" onClick={send} disabled={!draft.trim()} aria-label="send">↑</button>}
+              : draft.trim()
+                ? <button className="send" onClick={send} aria-label="send">↑</button>
+                : <button className="send" onClick={() => setTalkOpen(true)} aria-label="talk" title="Talk to Jace">🎙</button>}
           </div>
           <div className="hint">Jace remembers. Your conversations are private.</div>
         </div>
       </main>
 
+      {talkOpen && <TalkMode onUserText={voiceTurn} onClose={() => setTalkOpen(false)} />}
       {searchOpen && (
         <div className="overlay" onClick={() => setSearchOpen(false)}>
           <div className="searchbox" onClick={(e) => e.stopPropagation()}>
