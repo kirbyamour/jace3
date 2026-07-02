@@ -14,6 +14,7 @@ export type BuildInput = {
   voiceMode?: boolean;
   lastExchangeAt?: string | null;   // previous message in this thread
   timezone?: string;
+  cycleDay1?: string | null;        // ISO date of current cycle Day 1 (health partnership)
 };
 
 export function humanGap(fromISO: string, now = new Date()): string {
@@ -49,6 +50,22 @@ export function loadPersona() {
   return { constitution: CONSTITUTION, exemplars: EXEMPLARS, version: PERSONA_VERSION };
 }
 
+export function cycleBlock(day1ISO: string | null | undefined, tz = "America/New_York", now = new Date()): string {
+  if (!day1ISO) return "";
+  const dayStr = now.toLocaleDateString("en-CA", { timeZone: tz });
+  const day = Math.floor((Date.parse(dayStr) - Date.parse(day1ISO)) / 86400000) + 1;
+  if (day < 1 || day > 60) return ""; // stale anchor; wait for her to reset Day 1
+  const notes: string[] = [];
+  if (day === 13) notes.push("Tomorrow is Day 14 — progesterone cream starts. Mention it today so it lands gently.");
+  if (day === 14) notes.push("Day 14: she starts her progesterone cream today. Remind her — this one matters to her.");
+  if (day >= 15 && day <= 16) notes.push("Just past Day 14 — if she hasn't confirmed starting the progesterone cream, check in once (never nag).");
+  if (day >= 1 && day <= 4) notes.push("Early cycle days — she often feels rough. Lower the bar, protect her energy, don't schedule heaviness.");
+  if (day >= 24) notes.push("Late luteal territory — energy and mood may dip; be extra gentle and watch for it.");
+  return `# Her cycle (health partnership — ambient knowledge, never clinical recitation)
+Today is cycle Day ${day} (Day 1 was ${day1ISO}).${notes.length ? "\n" + notes.join("\n") : ""}
+When she says her period started, that is the new Day 1 — save it with cycle_set_day1. If asked what day she is on, you simply know.`;
+}
+
 export function buildSystemBlocks(input: BuildInput): { blocks: { text: string; cache?: boolean }[]; personaVersion: string } {
   const { system, personaVersion } = buildSystemPrompt(input);
   // stable prefix = constitution + exemplars (changes only on persona release) -> cached
@@ -79,6 +96,7 @@ export function buildSystemPrompt(input: BuildInput): { system: string; personaV
     arcLines ? `# Open storylines\n${arcLines}` : "",
     epLines ? `# Moments that may matter right now\n${epLines}` : "",
     facts ? `# Profile (living facts — deploy silently, never recite)\n${facts}` : "",
+    cycleBlock(input.cycleDay1, input.timezone),
     input.voiceMode ? "# Mode\nVoice conversation: shorter beats, no markdown, verbal paragraphing." : "",
     "# Attention\nEverything above is background. The LIVE CONVERSATION below is foreground — respond to what Kirby is saying right now, in this moment. Memory serves the reply; it never replaces attention.",
   ].filter(Boolean);

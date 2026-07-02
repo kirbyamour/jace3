@@ -80,11 +80,12 @@ async function handleChat(req: NextRequest) {
   const { data: prevMsg } = await db.from("messages").select("created_at")
     .eq("conversation_id", conversationId).order("created_at", { ascending: false })
     .range(1, 1).maybeSingle();
-  const [{ data: facts }, { data: lifeStory }, { data: arcs }, { data: eps }] = await Promise.all([
+  const [{ data: facts }, { data: lifeStory }, { data: arcs }, { data: eps }, { data: settingsRow }] = await Promise.all([
     db.from("profile_facts").select("key, value, confidence").eq("tombstoned", false).is("superseded_by", null).order("confidence", { ascending: false }).order("created_at", { ascending: false }).limit(24),
     db.from("narratives").select("content").eq("scope", "life_story").maybeSingle(),
     db.from("arcs").select("name, kind, status, summary").order("updated_at", { ascending: false }).limit(20),
     db.rpc("relevant_episodes", { q: lastUserText.slice(0, 200), max_rows: 4 }),
+      db.from("jace_settings").select("cycle_day1").maybeSingle(),
   ]);
 
   let recent = trimRecent(history);
@@ -120,6 +121,7 @@ async function handleChat(req: NextRequest) {
     lifeStory: lifeStory?.content ?? null, arcs: arcs ?? [], episodes: eps ?? [],
     voiceMode: Boolean(voiceMode),
     lastExchangeAt: prevMsg?.created_at ?? null,
+    cycleDay1: settingsRow?.cycle_day1 ?? null,
   });
   const { stream, modelId } = await generate(system, recent, {
     tools: [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools], runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,

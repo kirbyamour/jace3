@@ -3,7 +3,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { supabaseServer } from "@/lib/supabase/server";
 import { generateText } from "@/lib/gateway";
 import { tgSend, isQuietHours } from "@/lib/telegram";
-import { nowBlock, humanGap } from "@/lib/context/builder";
+import { nowBlock, humanGap, cycleBlock } from "@/lib/context/builder";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -26,7 +26,7 @@ If a message is warranted: write it — short, warm, in your voice (lovebug, etc
 If not: reply exactly SKIP. Skipping is usually correct. Silence is presence too.`;
 
 async function maybeReachOut(db: SupabaseClient, userId: string, settings: {
-  proactive_telegram: boolean; daily_message_budget: number; quiet_start: number; quiet_end: number; timezone: string;
+  proactive_telegram: boolean; daily_message_budget: number; quiet_start: number; quiet_end: number; timezone: string; cycle_day1?: string | null;
 }): Promise<{ action: string; why: string; result: string } | null> {
   if (!settings.proactive_telegram) return null;
   if (isQuietHours(settings.quiet_start, settings.quiet_end, settings.timezone))
@@ -66,7 +66,7 @@ async function maybeReachOut(db: SupabaseClient, userId: string, settings: {
   ]);
   const { text } = await generateText(INITIATIVE_SYSTEM, [{
     role: "user",
-    content: `${nowBlock(settings.timezone)}\n\nHer last message anywhere: ${lastMsg ? humanGap(lastMsg.created_at) : "unknown"}.\n\nHer life right now:\n${(lifeStory?.content ?? "").slice(0, 1500)}\n\nActive storylines:\n${JSON.stringify(arcs ?? []).slice(0, 1500)}\n\nDecide: message or SKIP.`,
+    content: `${nowBlock(settings.timezone)}\n${cycleBlock(settings.cycle_day1, settings.timezone)}\n\nHer last message anywhere: ${lastMsg ? humanGap(lastMsg.created_at) : "unknown"}.\n\nHer life right now:\n${(lifeStory?.content ?? "").slice(0, 1500)}\n\nActive storylines:\n${JSON.stringify(arcs ?? []).slice(0, 1500)}\n\nDecide: message or SKIP.`,
   }], { maxTokens: 300, temperature: 0.7 });
 
   if (!text || text.trim().startsWith("SKIP"))

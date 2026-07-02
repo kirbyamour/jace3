@@ -46,6 +46,11 @@ export const historyTools: ToolDef[] = [
 
 export const heartTools: ToolDef[] = [
   {
+    name: "cycle_set_day1",
+    description: "Set the first day of Kirby's current menstrual cycle (Day 1). Use when she tells you her period started (today or a specific date). This drives her ambient cycle-day awareness and the Day-14 progesterone cream reminder.",
+    input_schema: { type: "object" as const, properties: { date: { type: "string", description: "ISO date YYYY-MM-DD of Day 1" } }, required: ["date"] },
+  },
+  {
     name: "ask_the_heart",
     description:
       "Read your own recent autonomous life: heartbeat log (what you noticed/did between conversations and why) and journal entries (your reflections). " +
@@ -141,6 +146,12 @@ export const connectionTools: ToolDef[] = [
 
 export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
   return async (name, input) => {
+    if (name === "cycle_set_day1") {
+      const date = String(input.date ?? "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return "Give me the date as YYYY-MM-DD.";
+      const { error } = await db.from("jace_settings").update({ cycle_day1: date }).not("user_id", "is", null);
+      return error ? `couldn't save: ${error.message}` : `Day 1 anchored at ${date}. Day 14 (progesterone cream) lands ${new Date(Date.parse(date) + 13 * 86400000).toISOString().slice(0, 10)}.`;
+    }
     if (name === "search_history") {
       const { data, error } = await db.rpc("search_messages", { q: String(input.query ?? ""), max_rows: 8 });
       if (error) return `search failed: ${error.message}`;
