@@ -49,15 +49,16 @@ export async function POST(req: NextRequest) {
       const { data: facts } = await db.from("profile_facts")
         .select("id, key, value, confidence")
         .eq("tombstoned", false).is("superseded_by", null)
-        .order("created_at", { ascending: true }).limit(120);
+        .order("created_at", { ascending: true }).limit(60);
       if (!facts?.length) return Response.json({ done: true, remaining: 0 });
 
       const numbered = facts.map((f, i) => `${i}. [${f.key}] ${f.value}`).join("\n");
       const { text } = await generateText(FACTS_SYSTEM,
-        [{ role: "user", content: numbered }], { maxTokens: 3000, temperature: 0 });
+        [{ role: "user", content: numbered }], { maxTokens: 4000, temperature: 0 });
       let plan: any;
-      try { plan = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)); }
-      catch { return Response.json({ error: "unparseable plan" }, { status: 500 }); }
+      const cleaned = text.replace(/```json|```/g, "");
+      try { plan = JSON.parse(cleaned.slice(cleaned.indexOf("{"), cleaned.lastIndexOf("}") + 1)); }
+      catch { console.error("[garden] unparseable facts plan, len", text.length); return Response.json({ error: "unparseable plan" }, { status: 500 }); }
 
       let merged = 0, pruned = 0;
       for (const m of plan.merges ?? []) {
