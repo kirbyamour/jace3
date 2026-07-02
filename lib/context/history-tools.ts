@@ -110,6 +110,35 @@ export const projectTools: ToolDef[] = [
   },
 ];
 
+export const connectionTools: ToolDef[] = [
+  {
+    name: "email_search",
+    description: "Search Kirby's inboxes (personal + school Gmail) for recent messages. Use for 'did X email me', deadlines, school/legal/financial-aid mail, or a morning inbox sense. Returns headers across accounts; read one with email_read.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "sender, subject, or keywords; empty = latest mail" },
+        days: { type: "number", description: "how far back (default 30)" },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "email_read",
+    description: "Read a specific email's full body by account label + uid from email_search results.",
+    input_schema: {
+      type: "object",
+      properties: { account: { type: "string" }, uid: { type: "number" } },
+      required: ["account", "uid"],
+    },
+  },
+  {
+    name: "calendar_upcoming",
+    description: "Kirby's actual schedule (all connected Google calendars): appointments, classes, court, kids' events. Use for 'what's my week', 'when is X', and to help her prepare. days_ahead default 7.",
+    input_schema: { type: "object", properties: { days_ahead: { type: "number" } }, required: [] },
+  },
+];
+
 export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
   return async (name, input) => {
     if (name === "search_history") {
@@ -181,6 +210,22 @@ export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
         return error ? `failed: ${error.message}` : "deleted";
       }
       return "unknown action";
+    }
+    if (name === "email_search") {
+      const { searchMail, mailAccounts } = await import("@/lib/connections/gmail");
+      if (mailAccounts().length === 0) return "no email accounts connected yet — Kirby needs to add GMAIL_USER_1/GMAIL_APP_PASSWORD_1 in the environment";
+      const rows = await searchMail(String(input.query ?? ""), Math.min(Number(input.days) || 30, 90));
+      return JSON.stringify(rows).slice(0, 8000);
+    }
+    if (name === "email_read") {
+      const { readMail } = await import("@/lib/connections/gmail");
+      return await readMail(String(input.account ?? ""), Number(input.uid));
+    }
+    if (name === "calendar_upcoming") {
+      const { upcomingEvents, calendars } = await import("@/lib/connections/calendar");
+      if (calendars().length === 0) return "no calendars connected yet — Kirby needs to add GCAL_ICS_URL_1 in the environment";
+      const evs = await upcomingEvents(Math.min(Number(input.days_ahead) || 7, 30));
+      return JSON.stringify(evs).slice(0, 8000);
     }
     if (name === "project_view") {
       const arcName = String(input.name ?? "");

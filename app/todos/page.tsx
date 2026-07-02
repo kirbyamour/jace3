@@ -110,7 +110,7 @@ export default function Todos() {
       <div key={key}
         onDragOver={(e) => e.preventDefault()}
         onDrop={() => { if (dragId) { moveTo(dragId, dayKey); setDragId(null); } }}
-        style={{ minWidth: 210, flex: 1, padding: "0 10px", borderRight: "1px solid var(--line)" }}>
+        style={{ minWidth: 210, flex: 1, padding: "0 10px", borderRight: "1px solid var(--line)", overflowY: "auto" }}>
         <h3 style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em",
           color: isToday ? "var(--ink)" : "var(--ink-soft)", borderBottom: isToday ? "2px solid var(--ink)" : "none",
           paddingBottom: 6 }}>{title}</h3>
@@ -216,9 +216,9 @@ export default function Todos() {
     const names = [...groups.keys()].sort((a, b) => (a === "Someday" ? -1 : b === "Someday" ? 1 : a.localeCompare(b)));
     const strip = (s: string) => s.replace(/^\[[^\]]{1,40}\]\s*/, "");
     return (
-      <div style={{ display: "flex", overflowX: "auto", alignItems: "flex-start", paddingBottom: 24 }}>
+      <div style={{ display: "flex", overflowX: "auto", alignItems: "flex-start", paddingBottom: 24, WebkitOverflowScrolling: "touch" as never, touchAction: "pan-x pan-y" }}>
         {names.map((name) => (
-          <div key={name} style={{ minWidth: 220, maxWidth: 260, padding: "0 12px", borderRight: "1px solid var(--line)", flexShrink: 0 }}
+          <div key={name} style={{ minWidth: 220, maxWidth: 260, padding: "0 12px", borderRight: "1px solid var(--line)", flexShrink: 0, maxHeight: "72dvh", overflowY: "auto", WebkitOverflowScrolling: "touch" as never }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => { if (dragId) { retagAndMove(dragId, name === "Someday" ? null : name); setDragId(null); } }}>
             <h3 style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, paddingBottom: 4 }}>
@@ -279,7 +279,7 @@ export default function Todos() {
         <button onClick={() => setWeekStart(new Date())} style={{ fontSize: 13 }}>today</button>
         <button onClick={() => setWeekStart(addDays(weekStart, 7))}>›</button>
       </div>
-      <div style={{ display: "flex", overflowX: "auto", minHeight: "58dvh", alignItems: "stretch" }}>
+      <div style={{ display: "flex", overflowX: "auto", minHeight: "58dvh", maxHeight: "80dvh", alignItems: "stretch", WebkitOverflowScrolling: "touch" as never, touchAction: "pan-x pan-y" }}>
         {focusesColumn()}
         {days.map((d) => column(
           d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }),

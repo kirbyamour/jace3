@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { generate } from "@/lib/gateway";
 import { buildSystemBlocks, trimRecent } from "@/lib/context/builder";
-import { historyTools, heartTools, todoTools, projectTools, makeHistoryExecutor } from "@/lib/context/history-tools";
+import { historyTools, heartTools, todoTools, projectTools, connectionTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import { webhookSecret, tgSend, tgGetFile, transcribe, tgSendVoice } from "@/lib/telegram";
 import type { ChatMessage } from "@/lib/gateway/types";
 
@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
     blocks.push({ text: "# Channel\nTelegram: keep replies to a few short paragraphs at most — this is texting, not the app. Same you, smaller room." });
 
     const { stream, modelId } = await generate(blocks, recent, {
-      tools: [...historyTools, ...heartTools, ...todoTools, ...projectTools], runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
+      tools: [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools], runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
     });
     const reader = stream.getReader();
     let full = "";
