@@ -93,6 +93,23 @@ export const todoTools: ToolDef[] = [
   },
 ];
 
+export const projectTools: ToolDef[] = [
+  {
+    name: "project_view",
+    description: "Full picture of one of Kirby's projects/storylines by arc name (e.g. 'Mero Launch & Vision', 'Starr King Scholarship & Seminary Path'): current state, notes, milestones, related tasks and moments. Use when a project is the topic.",
+    input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+  },
+  {
+    name: "project_note",
+    description: "Add a note or milestone to a project when something worth recording happens or she asks you to log it. kind: note|milestone.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string" }, content: { type: "string" }, kind: { type: "string", enum: ["note", "milestone"] } },
+      required: ["name", "content"],
+    },
+  },
+];
+
 export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
   return async (name, input) => {
     if (name === "search_history") {
@@ -164,6 +181,29 @@ export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
         return error ? `failed: ${error.message}` : "deleted";
       }
       return "unknown action";
+    }
+    if (name === "project_view") {
+      const arcName = String(input.name ?? "");
+      const { data: arc } = await db.from("arcs").select("name,kind,status,summary,last_event")
+        .ilike("name", `%${arcName}%`).limit(1).maybeSingle();
+      if (!arc) return `no project matching "${arcName}"`;
+      const [{ data: notes }, { data: eps }] = await Promise.all([
+        db.from("project_notes").select("kind,content,created_at").eq("arc_name", arc.name)
+          .order("created_at", { ascending: false }).limit(20),
+        db.from("episodes").select("title,summary,happened_on").contains("arc_names", [arc.name])
+          .order("happened_on", { ascending: false }).limit(10),
+      ]);
+      return JSON.stringify({ arc, notes: notes ?? [], moments: eps ?? [] }).slice(0, 9000);
+    }
+    if (name === "project_note") {
+      const { data: arc } = await db.from("arcs").select("name,user_id").ilike("name", `%${String(input.name ?? "")}%`).limit(1).maybeSingle();
+      if (!arc) return "project not found";
+      const { error } = await db.from("project_notes").insert({
+        user_id: arc.user_id, arc_name: arc.name,
+        kind: input.kind === "milestone" ? "milestone" : "note",
+        content: String(input.content ?? "").slice(0, 600),
+      });
+      return error ? `failed: ${error.message}` : `logged to ${arc.name}`;
     }
     if (name === "ask_the_heart") {
       const days = Math.min(Number(input.days) || 3, 30);
