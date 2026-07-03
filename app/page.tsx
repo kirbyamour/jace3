@@ -175,12 +175,6 @@ export default function Chat() {
             meta = JSON.parse(dataLine.slice(5));
             if (!current && meta.conversationId) { setCurrent(meta.conversationId); loadConvs(); }
             if (meta.userMsgId) {
-              // bind local placeholders to real ids
-              setMsgs((m) => m.map((x) => {
-                if (localUserId && x.id === localUserId) return { ...x, id: meta.userMsgId! };
-                if (x.id === localAsst.id) return { ...x, parent_id: meta.userMsgId! };
-                return x;
-              }));
               if (placeholderParent && body.parentId !== undefined) {
                 pendingBranch = { parentId: String(body.parentId ?? ""), childId: meta.userMsgId! };
               }
@@ -191,7 +185,11 @@ export default function Chat() {
             const d = JSON.parse(dataLine.slice(5));
             const aid = d.assistantId ?? meta.assistantId;
             if (aid) {
-              setMsgs((m) => m.map((x) => (x.id === localAsst.id ? { ...x, id: aid } : x)));
+              setMsgs((m) => m.map((x) => {
+                if (localUserId && x.id === localUserId && meta.userMsgId) return { ...x, id: meta.userMsgId, parent_id: x.parent_id };
+                if (x.id === localAsst.id) return { ...x, id: aid, parent_id: meta.userMsgId ?? x.parent_id };
+                return x;
+              }));
               if (acc) await sb.current.from("messages").update({ content: acc }).eq("id", aid); // client confirm
               if (pendingBranch) setBranch(pendingBranch.parentId, pendingBranch.childId);
             }
