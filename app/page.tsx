@@ -123,6 +123,31 @@ export default function Chat() {
     const localTail = msgs.filter((m) => m.id.startsWith("local-"));
     return localTail.length ? { ...t, visible: [...t.visible, ...localTail] } : t;
   }, [msgs, overrides]);
+  const renderLogSeq = useRef(0);
+
+  useEffect(() => {
+    if (!streaming && !visible.some((m) => m.id.startsWith("local-"))) return;
+
+    renderLogSeq.current += 1;
+    const snapshot = visible.map((m) => ({
+      id: m.id,
+      role: m.role,
+      parent_id: m.parent_id,
+      local: m.id.startsWith("local-"),
+    }));
+    const assistantCount = visible.filter((m) => m.role === "assistant").length;
+    const userCount = visible.filter((m) => m.role === "user").length;
+
+    console.log("[chat render]", {
+      render: renderLogSeq.current,
+      streaming,
+      visibleLength: visible.length,
+      visibleIds: visible.map((m) => m.id),
+      visibleMessages: snapshot,
+      assistantCount,
+      userCount,
+    });
+  }, [streaming, visible]);
 
   useEffect(() => {
     const el = threadRef.current;
