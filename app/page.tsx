@@ -106,7 +106,8 @@ export default function Chat() {
       .eq("conversation_id", id).order("created_at").limit(2000);
     if (seq !== openSeq.current) return;
     const fresh = (data as Msg[]) ?? [];
-    cache.current.set(id, fresh); setMsgs(fresh);
+    cache.current.set(id, fresh);
+    setMsgs(fresh);
     if (scrollToMsg) {
       setFlashId(scrollToMsg);
       setTimeout(() => { if (seq === openSeq.current) document.getElementById(`m-${scrollToMsg}`)?.scrollIntoView({ block: "center" }); }, 60);
@@ -141,6 +142,7 @@ export default function Chat() {
     let finalText = "";
     let watchdog: ReturnType<typeof setInterval> | null = null;
     let controller: AbortController | null = null;
+    let pendingBranch: { parentId: string; childId: string } | null = null;
     setStreaming(true); setStick(true);
     const localAsst: Msg = { id: `local-a-${Date.now()}`, role: "assistant", content: "",
       parent_id: placeholderParent, created_at: new Date().toISOString() };
@@ -179,7 +181,9 @@ export default function Chat() {
                 if (x.id === localAsst.id) return { ...x, parent_id: meta.userMsgId! };
                 return x;
               }));
-              if (placeholderParent && body.parentId !== undefined) setBranch(String(body.parentId ?? ""), meta.userMsgId!);
+              if (placeholderParent && body.parentId !== undefined) {
+                pendingBranch = { parentId: String(body.parentId ?? ""), childId: meta.userMsgId! };
+              }
             }
             continue;
           }
@@ -189,6 +193,7 @@ export default function Chat() {
             if (aid) {
               setMsgs((m) => m.map((x) => (x.id === localAsst.id ? { ...x, id: aid } : x)));
               if (acc) await sb.current.from("messages").update({ content: acc }).eq("id", aid); // client confirm
+              if (pendingBranch) setBranch(pendingBranch.parentId, pendingBranch.childId);
             }
             continue;
           }
