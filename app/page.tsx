@@ -70,6 +70,8 @@ export default function Chat() {
   const abortRef = useRef<AbortController | null>(null);
   const cache = useRef<Map<string, Msg[]>>(new Map());
   const openSeq = useRef(0);
+  const streamScrollRef = useRef(false);
+  const prevStreamingRef = useRef(false);
 
   const loadConvs = useCallback(async () => {
     const { data } = await sb.current.from("conversations")
@@ -124,8 +126,33 @@ export default function Chat() {
 
   useEffect(() => {
     const el = threadRef.current;
-    if (el && stick) el.scrollTop = el.scrollHeight;
-  }, [visible, stick]);
+    if (!el || !stick) {
+      prevStreamingRef.current = streaming;
+      return;
+    }
+
+    if (streaming) {
+      const hasLocalAssistant = visible.some((m) => m.id.startsWith("local-a-"));
+      if (hasLocalAssistant && !streamScrollRef.current) {
+        el.scrollTop = el.scrollHeight;
+        streamScrollRef.current = true;
+      }
+      prevStreamingRef.current = streaming;
+      return;
+    }
+
+    if (prevStreamingRef.current) {
+      streamScrollRef.current = false;
+      prevStreamingRef.current = streaming;
+      return;
+    }
+
+    if (!visible.some((m) => m.id.startsWith("local-"))) {
+      el.scrollTop = el.scrollHeight;
+    }
+
+    prevStreamingRef.current = streaming;
+  }, [visible, stick, streaming]);
 
   function onScroll() {
     const el = threadRef.current; if (!el) return;
