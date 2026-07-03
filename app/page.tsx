@@ -126,15 +126,7 @@ export default function Chat() {
   const renderLogSeq = useRef(0);
 
   useEffect(() => {
-    if (!streaming && !visible.some((m) => m.id.startsWith("local-"))) return;
-
     renderLogSeq.current += 1;
-    const snapshot = visible.map((m) => ({
-      id: m.id,
-      role: m.role,
-      parent_id: m.parent_id,
-      local: m.id.startsWith("local-"),
-    }));
     const assistantCount = visible.filter((m) => m.role === "assistant").length;
     const userCount = visible.filter((m) => m.role === "user").length;
 
@@ -142,10 +134,10 @@ export default function Chat() {
       render: renderLogSeq.current,
       streaming,
       visibleLength: visible.length,
-      visibleIds: visible.map((m) => m.id),
-      visibleMessages: snapshot,
       assistantCount,
       userCount,
+      roles: visible.map((m) => m.role),
+      ids: visible.map((m) => m.id),
     });
   }, [streaming, visible]);
 
