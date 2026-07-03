@@ -65,7 +65,6 @@ export default function Chat() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[]>([]);
   const [flashId, setFlashId] = useState<string | null>(null);
-  const [debugChatEnabled, setDebugChatEnabled] = useState(process.env.NODE_ENV !== "production");
   const threadRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -82,15 +81,6 @@ export default function Chat() {
     setConvs((data as Conv[]) ?? []);
   }, []);
   useEffect(() => { loadConvs(); }, [loadConvs]);
-
-  useEffect(() => {
-    if (process.env.NODE_ENV !== "production") return;
-    try {
-      setDebugChatEnabled(window.location.search.includes("debugChat=1"));
-    } catch {
-      setDebugChatEnabled(false);
-    }
-  }, []);
 
   // Opportunistic heartbeat: opening the app gives Jace a chance to wake (interval-gated server-side).
   useEffect(() => {
@@ -441,23 +431,20 @@ export default function Chat() {
           <button onClick={() => { setSearchOpen(true); setQuery(""); }} aria-label="search">⌕</button>
         </div>
         <div className="thread" ref={threadRef} onScroll={onScroll}>
-          {debugChatEnabled && (
-            <div style={{
-              position: "fixed", right: 16, bottom: 16, zIndex: 70, width: "min(360px, calc(100vw - 32px))",
-              background: "rgba(255,255,255,.96)", color: "#111", border: "1px solid #d7d7d7", borderRadius: 14,
-              boxShadow: "0 12px 40px rgba(0,0,0,.16)", padding: "12px 14px", fontSize: 12, lineHeight: 1.45,
-              pointerEvents: "none", fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Arial, sans-serif"
-            }}>
-              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em", color: "#666", marginBottom: 6 }}>
-                Temporary debug panel
-              </div>
-              <div><strong>visible.length:</strong> {visible.length}</div>
-              <div><strong>assistant count:</strong> {debugAssistantCount}</div>
-              <div><strong>user count:</strong> {debugUserCount}</div>
-              <div><strong>roles:</strong> {debugRoles || "none"}</div>
-              <div><strong>streaming:</strong> {streaming ? "true" : "false"}</div>
+          <div style={{
+            position: "fixed", right: 16, bottom: 16, zIndex: 70, width: "min(360px, calc(100vw - 32px))",
+            background: "rgba(255,255,255,.96)", color: "#111", border: "1px solid #d7d7d7", borderRadius: 14,
+            boxShadow: "0 12px 40px rgba(0,0,0,.16)", padding: "12px 14px", fontSize: 12, lineHeight: 1.45,
+            pointerEvents: "none", fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Arial, sans-serif"
+          }}>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".08em", color: "#666", marginBottom: 6 }}>
+              DEBUG PANEL ACTIVE
             </div>
-          )}
+            <div><strong>visible count:</strong> {visible.length}</div>
+            <div><strong>assistant count:</strong> {debugAssistantCount}</div>
+            <div><strong>user count:</strong> {debugUserCount}</div>
+            <div><strong>streaming:</strong> {streaming ? "true" : "false"}</div>
+          </div>
           <div className="thread-inner">
             {visible.map((m) => {
               const sibs = m.parent_id ? siblings.get(m.parent_id) ?? [] : [];
