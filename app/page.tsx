@@ -69,6 +69,7 @@ export default function Chat() {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const cache = useRef<Map<string, Msg[]>>(new Map());
+  const openSeq = useRef(0);
 
   const loadConvs = useCallback(async () => {
     const { data } = await sb.current.from("conversations")
@@ -94,6 +95,7 @@ export default function Chat() {
   }, []);
 
   const openConv = useCallback(async (id: string | null, scrollToMsg?: string) => {
+    const seq = ++openSeq.current;
     setSidebarOpen(false); setStick(!scrollToMsg); setEditing(null); setMenuFor(null);
     setCurrent((prev) => { if (prev && prev !== id) reflectSoon(prev); return id; });
     try { setOverrides(JSON.parse(localStorage.getItem(`branch-${id}`) ?? "{}")); } catch { setOverrides({}); }
@@ -102,12 +104,13 @@ export default function Chat() {
     const { data } = await sb.current.from("messages")
       .select("id,role,content,parent_id,created_at,attachments")
       .eq("conversation_id", id).order("created_at").limit(2000);
+    if (seq !== openSeq.current) return;
     const fresh = (data as Msg[]) ?? [];
     cache.current.set(id, fresh); setMsgs(fresh);
     if (scrollToMsg) {
       setFlashId(scrollToMsg);
-      setTimeout(() => document.getElementById(`m-${scrollToMsg}`)?.scrollIntoView({ block: "center" }), 60);
-      setTimeout(() => setFlashId(null), 1800);
+      setTimeout(() => { if (seq === openSeq.current) document.getElementById(`m-${scrollToMsg}`)?.scrollIntoView({ block: "center" }); }, 60);
+      setTimeout(() => { if (seq === openSeq.current) setFlashId(null); }, 1800);
     }
   }, [reflectSoon]);
 
@@ -135,25 +138,28 @@ export default function Chat() {
     if (current) localStorage.setItem(`branch-${current}`, JSON.stringify(next));
   }
 
-  async function runStream(body: Record<string, unknown>, placeholderParent: string | null, onDelta?: (full: string) => void): Promise<string> {
+  async function runStream(body: Record<string, unknown>, placeholderParent: string | null, localUserId?: string, onDelta?: (full: string) => void): Promise<string> {
     let finalText = "";
+    let watchdog: ReturnType<typeof setInterval> | null = null;
+    let controller: AbortController | null = null;
     setStreaming(true); setStick(true);
     const localAsst: Msg = { id: `local-a-${Date.now()}`, role: "assistant", content: "",
       parent_id: placeholderParent, created_at: new Date().toISOString() };
     setMsgs((m) => [...m, localAsst]);
     try {
-      abortRef.current = new AbortController();
+      controller = new AbortController();
+      abortRef.current = controller;
       const res = await fetch("/api/chat", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify(body), signal: abortRef.current.signal,
+        body: JSON.stringify(body), signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(await res.text());
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let lastToken = Date.now();
       // finalText captured for voice mode
-      const watchdog = setInterval(() => {
-        if (Date.now() - lastToken > 75000) { clearInterval(watchdog); abortRef.current?.abort(); }
+      watchdog = setInterval(() => {
+        if (Date.now() - lastToken > 75000) { if (watchdog) clearInterval(watchdog); controller?.abort(); }
       }, 5000);
       let buf = ""; let acc = ""; let meta: { conversationId?: string; userMsgId?: string; assistantId?: string } = {};
       for (;;) {
@@ -170,7 +176,7 @@ export default function Chat() {
             if (meta.userMsgId) {
               // bind local placeholders to real ids
               setMsgs((m) => m.map((x) => {
-                if (x.id.startsWith("local-u-")) return { ...x, id: meta.userMsgId! };
+                if (localUserId && x.id === localUserId) return { ...x, id: meta.userMsgId! };
                 if (x.id === localAsst.id) return { ...x, parent_id: meta.userMsgId! };
                 return x;
               }));
@@ -201,8 +207,8 @@ export default function Chat() {
         console.error(e);
       }
     } finally {
-      // @ts-expect-error watchdog may be undeclared in some paths
-      try { clearInterval(watchdog); } catch {}
+      if (watchdog) clearInterval(watchdog);
+      if (abortRef.current === controller) abortRef.current = null;
       setStreaming(false); loadConvs();
       const cid = (current ?? "") as string; if (cid) cache.current.delete(cid);
     }
@@ -241,7 +247,7 @@ export default function Chat() {
     const localUser: Msg = { id: `local-u-${Date.now()}`, role: "user", content: content || "(shared)",
       parent_id: realParent, created_at: new Date().toISOString(), attachments: atts };
     setMsgs((m) => [...m, localUser]);
-    await runStream({ conversationId: current, content: content || "(shared without words)", parentId: realParent, attachments: atts }, null);
+    await runStream({ conversationId: current, content: content || "(shared without words)", parentId: realParent, attachments: atts }, localUser.id, localUser.id);
   }
 
   async function submitEdit(m: Msg) {
@@ -251,7 +257,7 @@ export default function Chat() {
     const localUser: Msg = { id: `local-u-${Date.now()}`, role: "user", content,
       parent_id: m.parent_id, created_at: new Date().toISOString() };
     setMsgs((x) => [...x, localUser]);
-    await runStream({ conversationId: current, content, parentId: m.parent_id }, null);
+    await runStream({ conversationId: current, content, parentId: m.parent_id }, localUser.id, localUser.id);
   }
 
   async function regenerate(assistantMsg: Msg) {
@@ -265,7 +271,7 @@ export default function Chat() {
     const localUser: Msg = { id: `local-u-${Date.now()}`, role: "user", content: text,
       parent_id: realParent, created_at: new Date().toISOString() };
     setMsgs((m) => [...m, localUser]);
-    return await runStream({ conversationId: current, content: text, parentId: realParent, voiceMode: true }, null, onDelta);
+    return await runStream({ conversationId: current, content: text, parentId: realParent, voiceMode: true }, localUser.id, localUser.id, onDelta);
   }
 
   function stop() { abortRef.current?.abort(); setStreaming(false); }

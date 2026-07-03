@@ -185,6 +185,7 @@ export default function TalkMode({ onUserText, onClose }: Props) {
       const { text } = await res.json();
       const t = String(text ?? "").trim();
       if (!t && !wasSpeaking) { setPh("listening"); return; }
+      if (!wasSpeaking && phaseRef.current === "thinking") setPh("listening");
       routeText(t);
     } catch { if (!closingRef.current) setPh("listening"); }
   }, [routeText]);
