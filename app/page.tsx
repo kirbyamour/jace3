@@ -1,6 +1,5 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { supabaseBrowser } from "@/lib/supabase/client";
@@ -43,7 +42,6 @@ function buildThread(all: Msg[], overrides: Record<string, string>): { visible: 
 }
 
 export default function Chat() {
-  const searchParams = useSearchParams();
   const sb = useRef(supabaseBrowser());
   const [convs, setConvs] = useState<Conv[]>([]);
   const [current, setCurrent] = useState<string | null>(null);
@@ -67,6 +65,7 @@ export default function Chat() {
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[]>([]);
   const [flashId, setFlashId] = useState<string | null>(null);
+  const [debugChatEnabled, setDebugChatEnabled] = useState(process.env.NODE_ENV !== "production");
   const threadRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -83,6 +82,15 @@ export default function Chat() {
     setConvs((data as Conv[]) ?? []);
   }, []);
   useEffect(() => { loadConvs(); }, [loadConvs]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") return;
+    try {
+      setDebugChatEnabled(window.location.search.includes("debugChat=1"));
+    } catch {
+      setDebugChatEnabled(false);
+    }
+  }, []);
 
   // Opportunistic heartbeat: opening the app gives Jace a chance to wake (interval-gated server-side).
   useEffect(() => {
@@ -125,7 +133,6 @@ export default function Chat() {
     const localTail = msgs.filter((m) => m.id.startsWith("local-"));
     return localTail.length ? { ...t, visible: [...t.visible, ...localTail] } : t;
   }, [msgs, overrides]);
-  const debugChatEnabled = process.env.NODE_ENV !== "production" || searchParams.get("debugChat") === "1";
   const debugAssistantCount = visible.filter((m) => m.role === "assistant").length;
   const debugUserCount = visible.filter((m) => m.role === "user").length;
   const debugRoles = visible.map((m) => m.role).join(" · ");
