@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(req: NextRequest) {
   if (process.env.NODE_ENV !== "production" && process.env.DEMO_NO_AUTH === "1") return NextResponse.next();
+  if (req.nextUrl.pathname === "/api/telegram/webhook") return NextResponse.next();
   let res = NextResponse.next({ request: req });
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -25,4 +26,9 @@ export async function middleware(req: NextRequest) {
   return res;
 }
 
-export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico|sw.js|manifest.json|icons/|api/).*)"] };
+export const config = {
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|sw.js|manifest.json|icons/|api/).*)",
+    "/api/telegram/webhook",
+  ],
+};
