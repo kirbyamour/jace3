@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { generate } from "@/lib/gateway";
 import { buildSystemBlocks, trimRecent } from "@/lib/context/builder";
-import { historyTools, heartTools, todoTools, projectTools, connectionTools, makeHistoryExecutor } from "@/lib/context/history-tools";
+import { historyTools, heartTools, todoTools, projectTools, connectionTools, creationTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import { webhookSecret, tgSend, tgGetFile, transcribe, tgSendVoice } from "@/lib/telegram";
 import type { ChatMessage } from "@/lib/gateway/types";
 
@@ -16,6 +16,12 @@ export const maxDuration = 120;
 function safeErr(e: unknown): string {
   if (e instanceof Error) return `${e.name}: ${e.message}`;
   return String(e);
+}
+
+async function lineage(db: SupabaseClient, leaf: string): Promise<ChatMessage[]> {
+  const { data, error } = await db.rpc("get_lineage", { leaf, max_rows: 80 });
+  if (error) { console.error("[telegram][webhook] lineage:", error); return []; }
+  return (data ?? []).map((r: { role: string; content: string }) => ({ role: r.role, content: r.content })) as ChatMessage[];
 }
 
 export async function POST(req: NextRequest) {
@@ -70,15 +76,22 @@ export async function POST(req: NextRequest) {
     }
     if (!conv) return Response.json({ ok: true });
 
+    const { data: prevMsg } = await db.from("messages").select("id, created_at")
+      .eq("conversation_id", conv.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
+
     await db.from("messages").insert({
       conversation_id: conv.id, user_id: userId, role: "user", content: text,
+      parent_id: prevMsg?.id ?? null,
       modality: cameAsVoice ? "voice" : "text",
     });
     await db.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conv.id);
 
-    const [{ data: history }, { data: facts }, { data: lifeStory }, { data: arcs }, { data: eps }] = await Promise.all([
-      db.from("messages").select("role, content, created_at").eq("conversation_id", conv.id)
-        .order("created_at", { ascending: true }).limit(60),
+    const userMsgId = (await db.from("messages").select("id")
+      .eq("conversation_id", conv.id).eq("role", "user").order("created_at", { ascending: false }).limit(1).maybeSingle()).data?.id;
+    if (!userMsgId) return Response.json({ ok: true });
+
+    const [history, { data: facts }, { data: lifeStory }, { data: arcs }, { data: eps }] = await Promise.all([
+      lineage(db, userMsgId),
       db.from("profile_facts").select("key, value, confidence").eq("user_id", userId).eq("tombstoned", false)
         .is("superseded_by", null).order("confidence", { ascending: false }).limit(24),
       db.from("narratives").select("content").eq("scope", "life_story").maybeSingle(),
@@ -100,9 +113,13 @@ export async function POST(req: NextRequest) {
     blocks.push({ text: "# Channel\nTelegram: keep replies to a few short paragraphs at most — this is texting, not the app. Same you, smaller room." });
 
     console.log("[telegram][webhook] generation started");
+    const tools = [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools, ...creationTools];
+    console.log("[telegram][webhook] tool count:", tools.length);
     const { stream, modelId } = await generate(blocks, recent, {
-      tools: [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools], runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
+      tools, runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
+      debugTiming: (stage) => console.log("[telegram][webhook][gen]", stage),
     });
+    console.log("[telegram][webhook] model resolved:", modelId);
     const reader = stream.getReader();
     let full = "";
     for (;;) { const { done, value } = await reader.read(); if (done) break; full += value; }
@@ -118,6 +135,7 @@ export async function POST(req: NextRequest) {
     await db.from("messages").insert({
       conversation_id: conv.id, user_id: userId, role: "assistant", content: full || "…",
       model_id: modelId, persona_version: personaVersion,
+      parent_id: userMsgId,
       modality: cameAsVoice ? "voice" : "text",
     });
     // Remember the chat id for future Jace-initiated messages (budgeted, off by default).

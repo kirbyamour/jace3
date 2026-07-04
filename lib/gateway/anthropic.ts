@@ -195,6 +195,7 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
           opts.debugTiming?.(`tool round complete ${toolUses.length}`);
         }
         if (emittedChars === 0 && toolUseCount > 0) {
+          opts.debugTiming?.("finalizer pass starts");
           finalizerUsed = true;
           const finalNoToolRes = await callWithRetry(() =>
             connectRound(entry, key, finalizerSystem(system), apiMessages, { ...opts, tools: [] }, false)
@@ -211,8 +212,10 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
           );
           finalStopReason = stopReason;
           finalBlockTypes = blocks.map((b) => b.type);
+          if (emittedChars > 0) opts.debugTiming?.("finalizer pass emitted text");
         }
         if (emittedChars === 0) {
+          opts.debugTiming?.("fallback emitted");
           fallbackFired = true;
           controller.enqueue(EMPTY_TOOL_FALLBACK);
           emittedChars = EMPTY_TOOL_FALLBACK.length;
