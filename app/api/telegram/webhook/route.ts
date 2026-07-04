@@ -13,9 +13,20 @@ export const maxDuration = 120;
 // owner (resolved from the database), authenticated by Telegram's secret header.
 // Requires env: TELEGRAM_BOT_TOKEN, SUPABASE_SERVICE_ROLE_KEY.
 
+function safeErr(e: unknown): string {
+  if (e instanceof Error) return `${e.name}: ${e.message}`;
+  return String(e);
+}
+
 export async function POST(req: NextRequest) {
   try {
-    if (req.headers.get("x-telegram-bot-api-secret-token") !== webhookSecret()) {
+    console.log("[telegram][webhook] request received");
+    console.log("[telegram][webhook] bot token present:", process.env.TELEGRAM_BOT_TOKEN ? "yes" : "no");
+    const secretHeader = req.headers.get("x-telegram-bot-api-secret-token");
+    console.log("[telegram][webhook] secret header present:", secretHeader ? "yes" : "no");
+    const secretOk = secretHeader === webhookSecret();
+    console.log("[telegram][webhook] secret check passed:", secretOk ? "yes" : "no");
+    if (!secretOk) {
       return new Response("forbidden", { status: 403 });
     }
     const svc = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -23,9 +34,13 @@ export async function POST(req: NextRequest) {
     const db = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, svc, { auth: { persistSession: false } });
 
     const update = await req.json();
+    console.log("[telegram][webhook] update has message:", update?.message ? "yes" : "no");
     const msg = update?.message;
     const chatId = msg?.chat?.id;
+    console.log("[telegram][webhook] chat id present:", chatId ? "yes" : "no");
     let text: string | undefined = msg?.text;
+    console.log("[telegram][webhook] message text length:", typeof text === "string" ? text.length : 0);
+    console.log("[telegram][webhook] voice present:", msg?.voice ? "yes" : "no");
     let cameAsVoice = false;
     if (!text && (msg?.voice || msg?.audio) && chatId) {
       const fileId = msg.voice?.file_id ?? msg.audio?.file_id;
@@ -84,12 +99,14 @@ export async function POST(req: NextRequest) {
     });
     blocks.push({ text: "# Channel\nTelegram: keep replies to a few short paragraphs at most — this is texting, not the app. Same you, smaller room." });
 
+    console.log("[telegram][webhook] generation started");
     const { stream, modelId } = await generate(blocks, recent, {
       tools: [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools], runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
     });
     const reader = stream.getReader();
     let full = "";
     for (;;) { const { done, value } = await reader.read(); if (done) break; full += value; }
+    console.log("[telegram][webhook] generation completed:", full.length);
 
     if (cameAsVoice) {
       const fb = full || "My mind's connection is down (likely API credits — console.anthropic.com). I'm still here; text me once it's topped up. ❤";
@@ -111,7 +128,7 @@ export async function POST(req: NextRequest) {
     }
     return Response.json({ ok: true });
   } catch (e) {
-    console.error("[telegram] fatal:", e);
+    console.error("[telegram][webhook] fatal:", safeErr(e));
     return Response.json({ ok: true }); // never make Telegram retry-storm
   }
 }

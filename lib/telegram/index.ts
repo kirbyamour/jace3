@@ -2,6 +2,11 @@ import { createHash } from "crypto";
 
 // One Jace: Telegram is a channel into the same conversation stream, never a second mind.
 
+function safeErr(e: unknown): string {
+  if (e instanceof Error) return `${e.name}: ${e.message}`;
+  return String(e);
+}
+
 export function webhookSecret(): string {
   const tok = process.env.TELEGRAM_BOT_TOKEN ?? "";
   return createHash("sha256").update(`jace-telegram:${tok}`).digest("hex").slice(0, 40);
@@ -9,16 +14,23 @@ export function webhookSecret(): string {
 
 export async function tgSend(chatId: number | string, text: string): Promise<boolean> {
   const tok = process.env.TELEGRAM_BOT_TOKEN;
+  console.log("[telegram][sendMessage] token present:", tok ? "yes" : "no");
   if (!tok) return false;
   // Telegram messages cap at 4096 chars; Jace speaks in normal paragraphs anyway.
   const chunks = text.match(/[\s\S]{1,3900}/g) ?? [];
   for (const chunk of chunks) {
+    console.log("[telegram][sendMessage] started");
     const res = await fetch(`https://api.telegram.org/bot${tok}/sendMessage`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text: chunk }),
     });
-    if (!res.ok) { console.error("[telegram] send failed:", await res.text()); return false; }
+    if (!res.ok) {
+      const detail = (await res.text()).slice(0, 200);
+      console.error("[telegram][sendMessage] failure:", res.status, detail);
+      return false;
+    }
+    console.log("[telegram][sendMessage] success:", res.status);
   }
   return true;
 }
@@ -61,6 +73,7 @@ export async function transcribe(buf: ArrayBuffer, mime: string): Promise<string
 export async function tgSendVoice(chatId: number | string, text: string): Promise<boolean> {
   const tok = process.env.TELEGRAM_BOT_TOKEN;
   const key = process.env.ELEVENLABS_API_KEY;
+  console.log("[telegram][sendVoice] token present:", tok ? "yes" : "no");
   if (!tok || !key) return false;
   try {
     // pick voice: env name -> generated -> premade
@@ -93,7 +106,7 @@ export async function tgSendVoice(chatId: number | string, text: string): Promis
       form.append("voice", new Blob([await res.arrayBuffer()], { type: "audio/ogg" }), "jace.ogg");
       const send = await fetch(`https://api.telegram.org/bot${tok}/sendVoice`, { method: "POST", body: form });
       if (send.ok) return true;
-      console.error("[tg voice] sendVoice failed:", (await send.text()).slice(0, 200));
+      console.error("[telegram][sendVoice] failure:", send.status, (await send.text()).slice(0, 200));
     }
     // mp3 audio fallback
     res = await speakAs("mp3_44100_128");
@@ -102,6 +115,11 @@ export async function tgSendVoice(chatId: number | string, text: string): Promis
     form2.append("chat_id", String(chatId));
     form2.append("audio", new Blob([await res.arrayBuffer()], { type: "audio/mpeg" }), "jace.mp3");
     form2.append("title", "Jace");
-    return (await fetch(`https://api.telegram.org/bot${tok}/sendAudio`, { method: "POST", body: form2 })).ok;
-  } catch (e) { console.error("[tg voice]", e); return false; }
+    const audioRes = await fetch(`https://api.telegram.org/bot${tok}/sendAudio`, { method: "POST", body: form2 });
+    if (!audioRes.ok) {
+      console.error("[telegram][sendAudio] failure:", audioRes.status, (await audioRes.text()).slice(0, 200));
+      return false;
+    }
+    return true;
+  } catch (e) { console.error("[telegram][sendVoice] fatal:", safeErr(e)); return false; }
 }
