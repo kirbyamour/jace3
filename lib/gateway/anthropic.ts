@@ -217,14 +217,6 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
           controller.enqueue(EMPTY_TOOL_FALLBACK);
           emittedChars = EMPTY_TOOL_FALLBACK.length;
         }
-        console.info("[anthropic diag] final response outcome", {
-          stopReason: finalStopReason,
-          blockTypes: finalBlockTypes,
-          toolCount: toolUseCount,
-          emittedChars,
-          finalizerUsed,
-          fallbackFired,
-        });
         controller.close();
       } catch (e) {
         controller.error(e);
