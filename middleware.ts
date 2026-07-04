@@ -3,7 +3,12 @@ import { NextResponse, type NextRequest } from "next/server";
 
 export async function middleware(req: NextRequest) {
   if (process.env.NODE_ENV !== "production" && process.env.DEMO_NO_AUTH === "1") return NextResponse.next();
-  if (req.nextUrl.pathname === "/api/telegram/webhook") return NextResponse.next();
+  const pathname = req.nextUrl.pathname;
+  const method = req.method;
+  const telegramWebhook = method === "POST" && (pathname === "/api/telegram/webhook" || pathname === "/api/telegram/webhook/");
+  console.log("[middleware] request:", pathname, method);
+  console.log("[middleware] telegram webhook bypass matched:", telegramWebhook ? "yes" : "no");
+  if (telegramWebhook) return NextResponse.next();
   let res = NextResponse.next({ request: req });
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -29,6 +34,6 @@ export async function middleware(req: NextRequest) {
 export const config = {
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|sw.js|manifest.json|icons/|api/).*)",
-    "/api/telegram/webhook",
+    "/api/telegram/webhook/:path*",
   ],
 };
