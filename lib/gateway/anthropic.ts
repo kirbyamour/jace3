@@ -138,6 +138,10 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
       let pendingRes: Response | null = firstRes;
       let firstTokenSeen = false;
       let emittedChars = 0;
+      let toolUseCount = 0;
+      let finalStopReason = "end_turn";
+      let finalBlockTypes: string[] = [];
+      let fallbackFired = false;
       for (let round = 0; round <= maxRounds; round++) {
           let res: Response;
           if (pendingRes) { res = pendingRes; pendingRes = null; }
@@ -159,10 +163,13 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
               }
             }
           );
+          finalStopReason = stopReason;
+          finalBlockTypes = blocks.map((b) => b.type);
           if (stopReason === "pause_turn") { apiMessages.push({ role: "assistant", content: blocks }); continue; }
           if (stopReason !== "tool_use" || !opts.runTool || round === maxRounds) break;
           const toolUses = blocks.filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use");
           if (toolUses.length === 0) break;
+          toolUseCount += toolUses.length;
           apiMessages.push({ role: "assistant", content: blocks });
           const results = await Promise.all(toolUses.map(async (tu) => {
             opts.debugTiming?.(`tool start ${tu.name}`);
@@ -179,10 +186,35 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
           apiMessages.push({ role: "user", content: results });
           opts.debugTiming?.(`tool round complete ${toolUses.length}`);
         }
+        if (emittedChars === 0 && toolUseCount > 0) {
+          const finalNoToolRes = await callWithRetry(() =>
+            connectRound(entry, key, system, apiMessages, { ...opts, tools: [] }, false)
+          );
+          const { blocks, stopReason } = await consumeRound(
+            finalNoToolRes,
+            (t) => { emittedChars += t.length; controller.enqueue(t); },
+            () => {
+              if (!firstTokenSeen) {
+                firstTokenSeen = true;
+                opts.debugTiming?.("first streamed token received");
+              }
+            }
+          );
+          finalStopReason = stopReason;
+          finalBlockTypes = blocks.map((b) => b.type);
+        }
         if (emittedChars === 0) {
+          fallbackFired = true;
           controller.enqueue(EMPTY_TOOL_FALLBACK);
           emittedChars = EMPTY_TOOL_FALLBACK.length;
         }
+        console.info("[anthropic diag] final response outcome", {
+          stopReason: finalStopReason,
+          blockTypes: finalBlockTypes,
+          toolCount: toolUseCount,
+          emittedChars,
+          fallbackFired,
+        });
         controller.close();
       } catch (e) {
         controller.error(e);
