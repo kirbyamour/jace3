@@ -9,6 +9,13 @@ type ContentBlock =
 
 const EMPTY_TOOL_FALLBACK =
   "I found the memory context, but I hit a response-generation issue before I could summarize it. Try asking me again in a simpler way.";
+const FINALIZER_INSTRUCTION =
+  "Using the tool results above, answer the user's original request now in natural language. Do not call tools. Do not return empty content. If the results are partial, summarize what you found and say what is uncertain.";
+
+function finalizerSystem(system: string | SystemBlock[]): string | SystemBlock[] {
+  if (typeof system === "string") return `${system}\n\n${FINALIZER_INSTRUCTION}`;
+  return [...system, { text: FINALIZER_INSTRUCTION }];
+}
 
 function systemPayload(system: string | SystemBlock[]) {
   if (typeof system === "string") return system;
@@ -142,6 +149,7 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
       let finalStopReason = "end_turn";
       let finalBlockTypes: string[] = [];
       let fallbackFired = false;
+      let finalizerUsed = false;
       for (let round = 0; round <= maxRounds; round++) {
           let res: Response;
           if (pendingRes) { res = pendingRes; pendingRes = null; }
@@ -187,8 +195,9 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
           opts.debugTiming?.(`tool round complete ${toolUses.length}`);
         }
         if (emittedChars === 0 && toolUseCount > 0) {
+          finalizerUsed = true;
           const finalNoToolRes = await callWithRetry(() =>
-            connectRound(entry, key, system, apiMessages, { ...opts, tools: [] }, false)
+            connectRound(entry, key, finalizerSystem(system), apiMessages, { ...opts, tools: [] }, false)
           );
           const { blocks, stopReason } = await consumeRound(
             finalNoToolRes,
@@ -213,6 +222,7 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
           blockTypes: finalBlockTypes,
           toolCount: toolUseCount,
           emittedChars,
+          finalizerUsed,
           fallbackFired,
         });
         controller.close();
