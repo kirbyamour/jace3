@@ -27,6 +27,7 @@ export type GenerateOptions = {
   runTool?: ToolExecutor;    // executes a tool call, returns JSON string result
   maxToolRounds?: number;
   webSearch?: boolean;       // provider-native web search, if the adapter supports it    // default 3
+  debugTiming?: (stage: string) => void;
 };
 
 export type GenerateResult = {
