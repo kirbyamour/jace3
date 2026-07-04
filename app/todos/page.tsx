@@ -1,13 +1,40 @@
 "use client";
 // Todos — TeuxDeux in spirit: a calm week, a someday shelf, and no shame anywhere.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabase/client";
 
 type Todo = { id: string; text: string; do_on: string | null; done: boolean;
   recurrence: string | null; position: number };
+type BucketKind = "day" | "focuses" | "someday";
+type Bucket = { kind: BucketKind; key: string | null };
+type DragHover = { bucket: Bucket; targetId: string | null; before: boolean };
 
 const dayISO = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const addDays = (d: Date, n: number) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const tagMatch = (text: string) => text.match(/^\[([^\]]{1,40})\]\s*/)?.[1] ?? null;
+const stripTag = (text: string) => text.replace(/^\[[^\]]{1,40}\]\s*/, "");
+const byDoneThenPosition = (a: Todo, b: Todo) => Number(a.done) - Number(b.done) || a.position - b.position;
+const bucketId = (bucket: Bucket) => `${bucket.kind}:${bucket.key ?? ""}`;
+const sameBucket = (a: Bucket, b: Bucket) => bucketId(a) === bucketId(b);
+const todoBucket = (t: Todo): Bucket => {
+  if (t.do_on) return { kind: "day", key: t.do_on };
+  if (t.text.startsWith("[Focuses]")) return { kind: "focuses", key: "Focuses" };
+  return { kind: "someday", key: tagMatch(t.text) };
+};
+const bucketMatchesTodo = (t: Todo, bucket: Bucket) => {
+  if (bucket.kind === "day") return t.do_on === bucket.key;
+  if (bucket.kind === "focuses") return t.do_on === null && t.text.startsWith("[Focuses]");
+  const tag = tagMatch(t.text);
+  return t.do_on === null && !t.text.startsWith("[Focuses]") && (bucket.key ? tag === bucket.key : !tag);
+};
+const positionAtIndex = (items: Todo[], index: number) => {
+  const prev = items[index - 1];
+  const next = items[index];
+  if (prev && next) return (prev.position + next.position) / 2;
+  if (next) return next.position - 1;
+  if (prev) return prev.position + 1;
+  return 0;
+};
 
 export default function Todos() {
   const sb = supabaseBrowser();
@@ -15,6 +42,7 @@ export default function Todos() {
   const [weekStart, setWeekStart] = useState(() => new Date());
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [dragId, setDragId] = useState<string | null>(null);
+  const [dragHover, setDragHover] = useState<DragHover | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [editVal, setEditVal] = useState("");
   const [recFor, setRecFor] = useState<string | null>(null);
@@ -124,6 +152,71 @@ export default function Todos() {
     await sb.from("todos").update({ do_on: dayKey, position: Date.now() / 1000 }).eq("id", id);
   }
 
+  const destinationText = (text: string, bucket: Bucket, source: Bucket) => {
+    if (sameBucket(bucket, source)) return text;
+    const bare = stripTag(text);
+    if (bucket.kind === "day") return bare;
+    if (bucket.kind === "focuses") return `[Focuses] ${bare}`;
+    return bucket.key ? `[${bucket.key}] ${bare}` : bare;
+  };
+  const dropPosition = (items: Todo[], done: boolean, targetId: string | null, before: boolean) => {
+    const sameDone = [...items].sort(byDoneThenPosition).filter((t) => t.done === done);
+    if (targetId) {
+      const idx = sameDone.findIndex((t) => t.id === targetId);
+      if (idx >= 0) return positionAtIndex(sameDone, before ? idx : idx + 1);
+    }
+    return positionAtIndex(sameDone, sameDone.length);
+  };
+  const commitDrag = async (bucket: Bucket, targetId: string | null, before: boolean) => {
+    const id = dragId;
+    if (!id) return false;
+    const t = todos.find((x) => x.id === id);
+    if (!t) return false;
+    const source = todoBucket(t);
+    const items = todos.filter((x) => x.id !== id && bucketMatchesTodo(x, bucket));
+    const position = dropPosition(items, t.done, targetId, before);
+    const update: Partial<Todo> & Record<string, string | number | boolean | null> = { position };
+    if (!sameBucket(bucket, source)) {
+      update.text = destinationText(t.text, bucket, source);
+      update.do_on = bucket.kind === "day" ? bucket.key : null;
+    }
+    setTodos((x) => x.map((y) => (y.id === id ? ({ ...y, ...update } as Todo) : y)));
+    await sb.from("todos").update(update).eq("id", id);
+    return true;
+  };
+  const clearDrag = () => {
+    setDragId(null);
+    setDragHover(null);
+  };
+  const handleBucketOver = (bucket: Bucket) => (e: React.DragEvent<HTMLDivElement>) => {
+    if (!dragId) return;
+    if (e.target !== e.currentTarget) return;
+    e.preventDefault();
+    setDragHover({ bucket, targetId: null, before: false });
+  };
+  const handleRowOver = (bucket: Bucket, t: Todo) => (e: React.DragEvent<HTMLDivElement>) => {
+    if (!dragId || dragId === t.id) return;
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    setDragHover({ bucket, targetId: t.id, before: e.clientY < rect.top + rect.height / 2 });
+  };
+  const handleRowDrop = (bucket: Bucket, t: Todo) => (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!dragId || !dragHover || !sameBucket(dragHover.bucket, bucket) || dragHover.targetId !== t.id) return;
+    void commitDrag(bucket, t.id, dragHover.before).finally(clearDrag);
+  };
+  const handleBucketDrop = (bucket: Bucket) => (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    if (!dragId || !dragHover || !sameBucket(dragHover.bucket, bucket) || dragHover.targetId !== null) return;
+    void commitDrag(bucket, null, false).finally(clearDrag);
+  };
+  const insertionMarker = (bucket: Bucket, t: Todo, before: boolean) => {
+    const active = dragHover && sameBucket(dragHover.bucket, bucket) && dragHover.targetId === t.id && dragHover.before === before;
+    if (!active) return null;
+    return <div style={{ height: 0, borderTop: "2px solid var(--ink)", margin: before ? "1px 0 5px" : "5px 0 1px", opacity: 0.7 }} />;
+  };
+
   async function saveEdit(id: string) {
     const text = editVal.trim();
     setEditing(null);
@@ -144,53 +237,62 @@ export default function Todos() {
   }
 
   function column(title: string, dayKey: string | null, isToday = false) {
+    const bucket: Bucket = { kind: "day", key: dayKey };
     const key = dayKey ?? "someday";
     const items = todos
-      .filter((t) => (dayKey ? t.do_on === dayKey : t.do_on === null))
-      .sort((a, b) => Number(a.done) - Number(b.done) || a.position - b.position);
+      .filter((t) => bucketMatchesTodo(t, bucket))
+      .sort(byDoneThenPosition);
     return (
       <div key={key}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={() => { if (dragId) { moveTo(dragId, dayKey); setDragId(null); } }}
+        onDragOver={handleBucketOver(bucket)}
+        onDrop={handleBucketDrop(bucket)}
         style={{ minWidth: 210, flex: 1, padding: "0 10px", borderRight: "1px solid var(--line)", overflowY: "auto" }}>
         <h3 style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em",
           color: isToday ? "var(--ink)" : "var(--ink-soft)", borderBottom: isToday ? "2px solid var(--ink)" : "none",
           paddingBottom: 6 }}>{title}</h3>
         {items.map((t) => (
-          <div key={t.id} draggable={editing !== t.id} onDragStart={() => setDragId(t.id)}
-            style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "5px 0", cursor: "grab", fontSize: 14.5, position: "relative" }}>
-            <input type="checkbox" checked={t.done} onChange={() => toggle(t)} />
-            {editing === t.id ? (
-              <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") saveEdit(t.id); if (e.key === "Escape") setEditing(null); }}
-                onBlur={() => saveEdit(t.id)}
-                style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 6, padding: "2px 6px",
-                  background: "var(--bg)", fontSize: 14.5, outline: "none" }} />
-            ) : (
-              <span onDoubleClick={() => { setEditing(t.id); setEditVal(t.text); }}
-                title="double-click to edit"
-                style={{ flex: 1, textDecoration: t.done ? "line-through" : "none",
-                  color: t.done ? "var(--ink-soft)" : "var(--ink)", overflowWrap: "anywhere" }}>
-                {t.text}
-              </span>
-            )}
-            <button onClick={() => setRecFor(recFor === t.id ? null : t.id)}
-              style={{ color: t.recurrence ? "var(--ink)" : "var(--ink-soft)", fontSize: 12 }}
-              title={t.recurrence ? `repeats ${t.recurrence}` : "set repeat"}>↻</button>
-            <button onClick={() => remove(t.id)} style={{ color: "var(--ink-soft)", fontSize: 12 }} title="delete">×</button>
-            {recFor === t.id && (
-              <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 30, background: "var(--bg)",
-                border: "1px solid var(--line)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,.15)", padding: 4, minWidth: 130 }}>
-                {[["", "no repeat"], ["daily", "every day"], ["weekdays", "weekdays"], ["weekly", "every week"], ["monthly", "every month"]].map(([val, label]) => (
-                  <button key={val} onClick={() => setRecurrence(t.id, val || null)}
-                    style={{ display: "block", width: "100%", textAlign: "left", padding: "6px 10px",
-                      borderRadius: 6, fontSize: 13.5,
-                      fontWeight: (t.recurrence ?? "") === val ? 700 : 400 }}>{label}</button>
-                ))}
-              </div>
-            )}
-          </div>
+          <Fragment key={t.id}>
+            {insertionMarker(bucket, t, true)}
+            <div key={t.id} draggable={editing !== t.id} onDragStart={() => { setDragId(t.id); setDragHover(null); }} onDragEnd={clearDrag}
+              onDragOver={handleRowOver(bucket, t)} onDrop={handleRowDrop(bucket, t)}
+              style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "5px 0", cursor: "grab", fontSize: 14.5, position: "relative" }}>
+              <input type="checkbox" checked={t.done} onChange={() => toggle(t)} />
+              {editing === t.id ? (
+                <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") saveEdit(t.id); if (e.key === "Escape") setEditing(null); }}
+                  onBlur={() => saveEdit(t.id)}
+                  style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 6, padding: "2px 6px",
+                    background: "var(--bg)", fontSize: 14.5, outline: "none" }} />
+              ) : (
+                <span onDoubleClick={() => { setEditing(t.id); setEditVal(t.text); }}
+                  title="double-click to edit"
+                  style={{ flex: 1, textDecoration: t.done ? "line-through" : "none",
+                    color: t.done ? "var(--ink-soft)" : "var(--ink)", overflowWrap: "anywhere" }}>
+                  {t.text}
+                </span>
+              )}
+              <button onClick={() => setRecFor(recFor === t.id ? null : t.id)}
+                style={{ color: t.recurrence ? "var(--ink)" : "var(--ink-soft)", fontSize: 12 }}
+                title={t.recurrence ? `repeats ${t.recurrence}` : "set repeat"}>↻</button>
+              <button onClick={() => remove(t.id)} style={{ color: "var(--ink-soft)", fontSize: 12 }} title="delete">×</button>
+              {recFor === t.id && (
+                <div style={{ position: "absolute", right: 0, top: "100%", zIndex: 30, background: "var(--bg)",
+                  border: "1px solid var(--line)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,.15)", padding: 4, minWidth: 130 }}>
+                  {[["", "no repeat"], ["daily", "every day"], ["weekdays", "weekdays"], ["weekly", "every week"], ["monthly", "every month"]].map(([val, label]) => (
+                    <button key={val} onClick={() => setRecurrence(t.id, val || null)}
+                      style={{ display: "block", width: "100%", textAlign: "left", padding: "6px 10px",
+                        borderRadius: 6, fontSize: 13.5,
+                        fontWeight: (t.recurrence ?? "") === val ? 700 : 400 }}>{label}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {insertionMarker(bucket, t, false)}
+          </Fragment>
         ))}
+        {dragHover && sameBucket(dragHover.bucket, bucket) && dragHover.targetId === null && (
+          <div style={{ height: 10, borderTop: "2px solid var(--ink)", marginTop: 6, opacity: 0.55 }} />
+        )}
         <input placeholder="+" value={drafts[key] ?? ""}
           onChange={(e) => setDrafts((d) => ({ ...d, [key]: e.target.value }))}
           onKeyDown={(e) => { if (e.key === "Enter") add(dayKey); }}
@@ -201,34 +303,43 @@ export default function Todos() {
   }
 
   function focusesColumn() {
-    const items = todos.filter((t) => t.do_on === null && t.text.startsWith("[Focuses]"))
-      .sort((a, b) => Number(a.done) - Number(b.done) || a.position - b.position);
+    const bucket: Bucket = { kind: "focuses", key: "Focuses" };
+    const items = todos.filter((t) => bucketMatchesTodo(t, bucket))
+      .sort(byDoneThenPosition);
     return (
       <div style={{ minWidth: 210, maxWidth: 240, flexShrink: 0, padding: "0 10px",
         borderRight: "2px solid var(--line)", background: "var(--sidebar)", borderRadius: 10 }}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={() => { if (dragId) { retagAndMove(dragId, "Focuses"); setDragId(null); } }}>
+        onDragOver={handleBucketOver(bucket)}
+        onDrop={handleBucketDrop(bucket)}>
         <h3 style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".06em",
           fontWeight: 700, paddingBottom: 6, paddingTop: 2 }}>◎ Focuses</h3>
         {items.map((t) => (
-          <div key={t.id} draggable onDragStart={() => setDragId(t.id)}
-            style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "5px 0", cursor: "grab", fontSize: 14 }}>
-            <input type="checkbox" checked={t.done} onChange={() => toggle(t)} />
-            {editing === t.id ? (
-              <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") saveEdit(t.id); if (e.key === "Escape") setEditing(null); }}
-                onBlur={() => saveEdit(t.id)}
-                style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 6, padding: "2px 6px", background: "var(--bg)", fontSize: 14, outline: "none" }} />
-            ) : (
-              <span onDoubleClick={() => { setEditing(t.id); setEditVal(t.text); }}
-                style={{ flex: 1, textDecoration: t.done ? "line-through" : "none",
-                  color: t.done ? "var(--ink-soft)" : "var(--ink)", overflowWrap: "anywhere" }}>
-                {t.text.replace(/^\[Focuses\]\s*/, "")}
-              </span>
-            )}
-            <button onClick={() => remove(t.id)} style={{ color: "var(--ink-soft)", fontSize: 12 }}>×</button>
-          </div>
+          <Fragment key={t.id}>
+            {insertionMarker(bucket, t, true)}
+            <div draggable={editing !== t.id} onDragStart={() => { setDragId(t.id); setDragHover(null); }} onDragEnd={clearDrag}
+              onDragOver={handleRowOver(bucket, t)} onDrop={handleRowDrop(bucket, t)}
+              style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "5px 0", cursor: "grab", fontSize: 14, position: "relative" }}>
+              <input type="checkbox" checked={t.done} onChange={() => toggle(t)} />
+              {editing === t.id ? (
+                <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") saveEdit(t.id); if (e.key === "Escape") setEditing(null); }}
+                  onBlur={() => saveEdit(t.id)}
+                  style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 6, padding: "2px 6px", background: "var(--bg)", fontSize: 14, outline: "none" }} />
+              ) : (
+                <span onDoubleClick={() => { setEditing(t.id); setEditVal(t.text); }}
+                  style={{ flex: 1, textDecoration: t.done ? "line-through" : "none",
+                    color: t.done ? "var(--ink-soft)" : "var(--ink)", overflowWrap: "anywhere" }}>
+                  {t.text.replace(/^\[Focuses\]\s*/, "")}
+                </span>
+              )}
+              <button onClick={() => remove(t.id)} style={{ color: "var(--ink-soft)", fontSize: 12 }}>×</button>
+            </div>
+            {insertionMarker(bucket, t, false)}
+          </Fragment>
         ))}
+        {dragHover && sameBucket(dragHover.bucket, bucket) && dragHover.targetId === null && (
+          <div style={{ height: 10, borderTop: "2px solid var(--ink)", marginTop: 6, opacity: 0.55 }} />
+        )}
         <input placeholder="+" value={drafts["focuses"] ?? ""}
           onChange={(e) => setDrafts((d) => ({ ...d, focuses: e.target.value }))}
           onKeyDown={async (e) => {
@@ -256,13 +367,15 @@ export default function Todos() {
       groups.get(key)!.push(t);
     }
     const names = orderNames([...groups.keys()]);
-    const strip = (s: string) => s.replace(/^\[[^\]]{1,40}\]\s*/, "");
     return (
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", paddingBottom: 24, rowGap: 18 }}>
-        {names.map((name) => (
-          <div key={name} className="sdlist" style={{ width: 240, padding: "0 12px", borderRight: "1px solid var(--line)", flexShrink: 0, maxHeight: "60dvh", overflowY: "auto", WebkitOverflowScrolling: "touch" as never }}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={() => { if (dragId) { retagAndMove(dragId, name === "Someday" ? null : name); setDragId(null); } }}>
+        {names.map((name) => {
+          const bucket: Bucket = { kind: "someday", key: name === "Someday" ? null : name };
+          const groupItems = groups.get(name)!.sort(byDoneThenPosition);
+          return (
+          <div key={name} className="sdlist" style={{ width: 240, padding: "0 12px", borderRight: "1px solid var(--line)", flexShrink: 0, maxHeight: "60dvh", overflowY: "auto" }}
+            onDragOver={handleBucketOver(bucket)}
+            onDrop={handleBucketDrop(bucket)}>
             <h3 style={{ fontSize: 14, textTransform: "uppercase", letterSpacing: ".05em", fontWeight: 700, paddingBottom: 4, display: "flex", alignItems: "center", gap: 4 }}>
               <span onDoubleClick={() => renameList(name, groups.get(name)!)} style={{ cursor: "text" }} title="Double-click to rename">{name}</span>
               <span style={{ color: "var(--ink-soft)", fontWeight: 400, fontSize: 12 }}>{groups.get(name)!.length}</span>
@@ -274,25 +387,33 @@ export default function Todos() {
               <button className="listctl" title="Move list right" onClick={() => shiftList(names, name, 1)}
                 style={{ border: "none", background: "none", color: "var(--ink-soft)", cursor: "pointer", fontSize: 12, padding: 2 }}>›</button>
             </h3>
-            {groups.get(name)!.sort((a, b) => Number(a.done) - Number(b.done) || a.position - b.position).map((t) => (
-              <div key={t.id} draggable onDragStart={() => setDragId(t.id)}
-                style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "4px 0", cursor: "grab", fontSize: 14, borderBottom: "1px solid var(--line)" }}>
-                <input type="checkbox" checked={t.done} onChange={() => toggle(t)} />
-                {editing === t.id ? (
-                  <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") saveEdit(t.id); if (e.key === "Escape") setEditing(null); }}
-                    onBlur={() => saveEdit(t.id)}
-                    style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 6, padding: "2px 6px", background: "var(--bg)", fontSize: 14, outline: "none" }} />
-                ) : (
-                  <span onDoubleClick={() => { setEditing(t.id); setEditVal(t.text); }}
-                    style={{ flex: 1, textDecoration: t.done ? "line-through" : "none",
-                      color: t.done ? "var(--ink-soft)" : "var(--ink)", overflowWrap: "anywhere" }}>
-                    {strip(t.text)}
-                  </span>
-                )}
-                <button onClick={() => remove(t.id)} style={{ color: "var(--ink-soft)", fontSize: 12 }}>×</button>
-              </div>
+            {groupItems.map((t) => (
+              <Fragment key={t.id}>
+                {insertionMarker(bucket, t, true)}
+                <div draggable={editing !== t.id} onDragStart={() => { setDragId(t.id); setDragHover(null); }} onDragEnd={clearDrag}
+                  onDragOver={handleRowOver(bucket, t)} onDrop={handleRowDrop(bucket, t)}
+                  style={{ display: "flex", gap: 8, alignItems: "baseline", padding: "4px 0", cursor: "grab", fontSize: 14, borderBottom: "1px solid var(--line)", position: "relative" }}>
+                  <input type="checkbox" checked={t.done} onChange={() => toggle(t)} />
+                  {editing === t.id ? (
+                    <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") saveEdit(t.id); if (e.key === "Escape") setEditing(null); }}
+                      onBlur={() => saveEdit(t.id)}
+                      style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 6, padding: "2px 6px", background: "var(--bg)", fontSize: 14, outline: "none" }} />
+                  ) : (
+                    <span onDoubleClick={() => { setEditing(t.id); setEditVal(t.text); }}
+                      style={{ flex: 1, textDecoration: t.done ? "line-through" : "none",
+                        color: t.done ? "var(--ink-soft)" : "var(--ink)", overflowWrap: "anywhere" }}>
+                      {stripTag(t.text)}
+                    </span>
+                  )}
+                  <button onClick={() => remove(t.id)} style={{ color: "var(--ink-soft)", fontSize: 12 }}>×</button>
+                </div>
+                {insertionMarker(bucket, t, false)}
+              </Fragment>
             ))}
+            {dragHover && sameBucket(dragHover.bucket, bucket) && dragHover.targetId === null && (
+              <div style={{ height: 10, borderTop: "2px solid var(--ink)", marginTop: 6, opacity: 0.55 }} />
+            )}
             <input placeholder="+" value={drafts["sd-" + name] ?? ""}
               onChange={(e) => setDrafts((d) => ({ ...d, ["sd-" + name]: e.target.value }))}
               onKeyDown={async (e) => {
@@ -308,7 +429,8 @@ export default function Todos() {
               }}
               style={{ width: "100%", border: 0, outline: 0, background: "transparent", padding: "6px 0", fontSize: 14, color: "var(--ink)" }} />
           </div>
-        ))}
+          );
+        })}
         <div style={{ minWidth: 200, padding: "0 12px" }}>
           <input placeholder='+ new list ("[Name] first task")' value={drafts["someday"] ?? ""}
             onChange={(e) => setDrafts((d) => ({ ...d, someday: e.target.value }))}
@@ -461,7 +583,7 @@ export default function Todos() {
         <button onClick={() => setWeekStart(new Date())} style={{ fontSize: 13 }}>today</button>
         <button onClick={() => setWeekStart(addDays(weekStart, 7))}>›</button>
       </div>
-      <div style={{ display: "flex", overflowX: "auto", minHeight: "58dvh", maxHeight: "80dvh", alignItems: "stretch", WebkitOverflowScrolling: "touch" as never, touchAction: "pan-x pan-y" }}>
+      <div style={{ display: "flex", overflowX: "auto", minHeight: "58dvh", maxHeight: "80dvh", alignItems: "stretch", WebkitOverflowScrolling: "touch" as never }}>
         {focusesColumn()}
         {days.map((d) => column(
           d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }),
