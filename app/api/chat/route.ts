@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { supabaseServer } from "@/lib/supabase/server";
-import { generate, getRegistry, isConfigured } from "@/lib/gateway";
+import { generate } from "@/lib/gateway";
 import { buildSystemBlocks, trimRecent } from "@/lib/context/builder";
 import { historyTools, heartTools, todoTools, projectTools, connectionTools, creationTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import type { ChatMessage } from "@/lib/gateway/types";
@@ -146,36 +146,6 @@ async function handleChat(req: NextRequest) {
     cycleDay1: settingsRow?.cycle_day1 ?? null,
   });
   mark("context built", { recentMessages: recent.length, systemBlocks: system.length, personaVersion });
-  const recentStats = recent.reduce((acc, m) => {
-    const chars = typeof m.content === "string"
-      ? m.content.length
-      : m.content.reduce((n, b) => n + (b.type === "text" ? String(b.text ?? "").length : 0), 0);
-    acc.totalChars += chars;
-    acc.maxChars = Math.max(acc.maxChars, chars);
-    return acc;
-  }, { totalChars: 0, maxChars: 0 });
-  const registry = getRegistry();
-  const candidateChain = [registry.active, ...registry.fallbackChain];
-  const selectedModel = candidateChain.find((id) => isConfigured(id)) ?? null;
-  console.info("[jace-chat diag] pre-generate normal chat", {
-    reqId,
-    elapsedMs: Math.round(performance.now() - t0),
-    mode: regenerateOf ? "regenerate" : "new_turn",
-    recentMessageCount: recent.length,
-    approxRecentChars: recentStats.totalChars,
-    maxSingleMessageChars: recentStats.maxChars,
-    attachmentCount: attachments?.length ?? 0,
-    toolCount: historyTools.length + heartTools.length + todoTools.length + projectTools.length + connectionTools.length + creationTools.length,
-    toolNames: [
-      ...historyTools,
-      ...heartTools,
-      ...todoTools,
-      ...projectTools,
-      ...connectionTools,
-      ...creationTools,
-    ].map((t) => t.name),
-    selectedModel,
-  });
   const { stream, modelId } = await generate(system, recent, {
     tools: [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools, ...creationTools], runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
     debugTiming: mark,
