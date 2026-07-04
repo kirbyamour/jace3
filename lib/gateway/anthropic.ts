@@ -7,6 +7,9 @@ type ContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
 
+const EMPTY_TOOL_FALLBACK =
+  "I found the memory context, but I hit a response-generation issue before I could summarize it. Try asking me again in a simpler way.";
+
 function summarizeToolResult(result: string): string {
   const trimmed = result.trim();
   if (!trimmed) return "empty";
@@ -150,6 +153,11 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
       const maxRounds = opts.maxToolRounds ?? 3;
       let pendingRes: Response | null = firstRes;
       let firstTokenSeen = false;
+      let emittedChars = 0;
+      let toolUseCount = 0;
+      let roundsRun = 0;
+      let finalStopReason = "end_turn";
+      let finalBlockTypes: string[] = [];
       for (let round = 0; round <= maxRounds; round++) {
           let res: Response;
           if (pendingRes) { res = pendingRes; pendingRes = null; }
@@ -163,7 +171,7 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
           }
           const { blocks, stopReason } = await consumeRound(
             res,
-            (t) => controller.enqueue(t),
+            (t) => { emittedChars += t.length; controller.enqueue(t); },
             () => {
               if (!firstTokenSeen) {
                 firstTokenSeen = true;
@@ -171,10 +179,14 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
               }
             }
           );
+          roundsRun = round + 1;
+          finalStopReason = stopReason;
+          finalBlockTypes = blocks.map((b) => b.type);
           if (stopReason === "pause_turn") { apiMessages.push({ role: "assistant", content: blocks }); continue; }
           if (stopReason !== "tool_use" || !opts.runTool || round === maxRounds) break;
           const toolUses = blocks.filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use");
           if (toolUses.length === 0) break;
+          toolUseCount += toolUses.length;
           apiMessages.push({ role: "assistant", content: blocks });
           const results = await Promise.all(toolUses.map(async (tu) => {
             opts.debugTiming?.(`tool start ${tu.name}`);
@@ -190,6 +202,18 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
           }));
           apiMessages.push({ role: "user", content: results });
           opts.debugTiming?.(`tool round complete ${toolUses.length}`);
+        }
+        console.info("[anthropic diag] final tool response state", {
+          stopReason: finalStopReason,
+          blockTypes: finalBlockTypes,
+          toolUseCount,
+          roundsRun,
+          emittedChars,
+          usedFallback: emittedChars === 0,
+        });
+        if (emittedChars === 0) {
+          controller.enqueue(EMPTY_TOOL_FALLBACK);
+          emittedChars = EMPTY_TOOL_FALLBACK.length;
         }
         controller.close();
       } catch (e) {

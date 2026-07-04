@@ -10,6 +10,9 @@ export const runtime = "nodejs";
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
+const EMPTY_CHAT_FALLBACK =
+  "I found the memory context, but I hit a response-generation issue before I could summarize it. Try asking me again in a simpler way.";
+
 export async function POST(req: NextRequest) {
   try {
     return await handleChat(req);
@@ -206,11 +209,14 @@ async function handleChat(req: NextRequest) {
         console.error("[jace-chat] stream error:", e);
         if (!full) {
           // His mind failed before a single word — say so honestly instead of leaving "…" forever.
-          full = "I'm having trouble thinking right now — my connection to my mind (the API) is failing. " +
-            "Most likely the API credits ran out or hit a spend limit: console.anthropic.com → Billing. I'll be right here when it's back.";
+          full = EMPTY_CHAT_FALLBACK;
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(full)}\n\n`));
         }
       } finally {
+        if (!full.trim()) {
+          full = EMPTY_CHAT_FALLBACK;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(full)}\n\n`));
+        }
         if (assistantId && full) {
           try {
             const { error } = await db.from("messages").update({ content: full }).eq("id", assistantId);
