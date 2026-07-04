@@ -7,6 +7,22 @@ type ContentBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
 
+function summarizeToolResult(result: string): string {
+  const trimmed = result.trim();
+  if (!trimmed) return "empty";
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return `array(len=${parsed.length})`;
+    if (parsed && typeof parsed === "object") {
+      return `object(keys=${Object.keys(parsed as Record<string, unknown>).length})`;
+    }
+    if (parsed === null) return "null";
+    return typeof parsed;
+  } catch {
+    return `text(chars=${trimmed.length})`;
+  }
+}
+
 function systemPayload(system: string | SystemBlock[]) {
   if (typeof system === "string") return system;
   return system.map((b) => ({ type: "text", text: b.text, ...(b.cache ? { cache_control: { type: "ephemeral" } } : {}) }));
@@ -16,6 +32,7 @@ async function connectRound(
   entry: ModelEntry, key: string, system: string | SystemBlock[],
   messages: unknown[], opts: GenerateOptions, withWebSearch: boolean
 ): Promise<Response> {
+  opts.debugTiming?.("model api request starts");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
@@ -52,7 +69,7 @@ async function callWithRetry(fn: () => Promise<Response>): Promise<Response> {
 }
 
 async function consumeRound(
-  res: Response, emit: (t: string) => void
+  res: Response, emit: (t: string) => void, onFirstToken?: () => void
 ): Promise<{ blocks: ContentBlock[]; stopReason: string }> {
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
@@ -83,6 +100,8 @@ async function consumeRound(
         case "content_block_delta":
           if (ev.delta.type === "text_delta") {
             (blocks[ev.index] as { type: "text"; text: string }).text += ev.delta.text;
+            onFirstToken?.();
+            onFirstToken = undefined;
             emit(ev.delta.text);
           } else if (ev.delta.type === "input_json_delta") {
             jsonAcc[ev.index] += ev.delta.partial_json;
@@ -128,9 +147,10 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
   return new ReadableStream<string>({
     async start(controller) {
       try {
-        const maxRounds = opts.maxToolRounds ?? 3;
-        let pendingRes: Response | null = firstRes;
-        for (let round = 0; round <= maxRounds; round++) {
+      const maxRounds = opts.maxToolRounds ?? 3;
+      let pendingRes: Response | null = firstRes;
+      let firstTokenSeen = false;
+      for (let round = 0; round <= maxRounds; round++) {
           let res: Response;
           if (pendingRes) { res = pendingRes; pendingRes = null; }
           else {
@@ -142,18 +162,34 @@ export const anthropicAdapter: Adapter = async (entry, system, messages, opts) =
             }
           }
           const { blocks, stopReason } = await consumeRound(
-            res, (t) => controller.enqueue(t)
+            res,
+            (t) => controller.enqueue(t),
+            () => {
+              if (!firstTokenSeen) {
+                firstTokenSeen = true;
+                opts.debugTiming?.("first streamed token received");
+              }
+            }
           );
           if (stopReason === "pause_turn") { apiMessages.push({ role: "assistant", content: blocks }); continue; }
           if (stopReason !== "tool_use" || !opts.runTool || round === maxRounds) break;
           const toolUses = blocks.filter((b): b is Extract<ContentBlock, { type: "tool_use" }> => b.type === "tool_use");
           if (toolUses.length === 0) break;
           apiMessages.push({ role: "assistant", content: blocks });
-          const results = await Promise.all(toolUses.map(async (tu) => ({
-            type: "tool_result", tool_use_id: tu.id,
-            content: await opts.runTool!(tu.name, tu.input).catch((e) => `tool error: ${e}`),
-          })));
+          const results = await Promise.all(toolUses.map(async (tu) => {
+            opts.debugTiming?.(`tool start ${tu.name}`);
+            try {
+              const content = await opts.runTool!(tu.name, tu.input);
+              opts.debugTiming?.(`tool complete ${tu.name} ok ${summarizeToolResult(content)}`);
+              return { type: "tool_result", tool_use_id: tu.id, content };
+            } catch (e) {
+              const err = e instanceof Error ? e : new Error(String(e));
+              opts.debugTiming?.(`tool complete ${tu.name} fail ${err.name} msglen=${err.message.length}`);
+              return { type: "tool_result", tool_use_id: tu.id, content: `tool error: ${err}` };
+            }
+          }));
           apiMessages.push({ role: "user", content: results });
+          opts.debugTiming?.(`tool round complete ${toolUses.length}`);
         }
         controller.close();
       } catch (e) {

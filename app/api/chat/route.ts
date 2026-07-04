@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { supabaseServer } from "@/lib/supabase/server";
-import { generate } from "@/lib/gateway";
+import { generate, getRegistry, isConfigured } from "@/lib/gateway";
 import { buildSystemBlocks, trimRecent } from "@/lib/context/builder";
 import { historyTools, heartTools, todoTools, projectTools, connectionTools, creationTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import type { ChatMessage } from "@/lib/gateway/types";
@@ -26,10 +26,22 @@ async function lineage(db: SupabaseClient, leaf: string): Promise<ChatMessage[]>
 }
 
 async function handleChat(req: NextRequest) {
+  const reqId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const t0 = performance.now();
+  let last = 0;
+  const mark = (stage: string, detail?: unknown) => {
+    const at = performance.now() - t0;
+    const delta = at - last;
+    last = at;
+    console.log(`[jace-chat timing ${reqId}] ${stage} +${Math.round(at)}ms (Δ${Math.round(delta)}ms)`, detail ?? "");
+  };
+
+  mark("request received");
   const cookieClient = supabaseServer();
   const [{ data: { user } }, { data: { session } }] = await Promise.all([
     cookieClient.auth.getUser(), cookieClient.auth.getSession(),
   ]);
+  mark("auth/session complete");
   if (!user || !session?.access_token) return new Response("unauthorized", { status: 401 });
 
   const db = createClient(
@@ -40,6 +52,7 @@ async function handleChat(req: NextRequest) {
   );
 
   const body = await req.json();
+  mark("request body parsed");
   const { conversationId: cidIn, content, parentId, regenerateOf, voiceMode, attachments } = body as {
     conversationId?: string; content?: string; parentId?: string | null; regenerateOf?: string; voiceMode?: boolean;
     attachments?: { path: string; type: string; name: string }[];
@@ -54,6 +67,7 @@ async function handleChat(req: NextRequest) {
     if (!conversationId) return new Response("missing conversation", { status: 400 });
     userMsgId = regenerateOf;
     history = await lineage(db, regenerateOf);
+    mark("lineage complete (regenerate)");
   } else {
     if (!content?.trim()) return new Response("empty", { status: 400 });
     if (!conversationId) {
@@ -63,6 +77,7 @@ async function handleChat(req: NextRequest) {
         .select("id").single();
       if (error) { console.error("[jace-chat] conv insert:", error); return new Response(error.message, { status: 500 }); }
       conversationId = data.id;
+      mark("conversation insert complete");
     }
     const { data: userRow, error: userInsErr } = await db.from("messages").insert({
       conversation_id: conversationId, user_id: user.id, role: "user", content,
@@ -71,8 +86,10 @@ async function handleChat(req: NextRequest) {
     }).select("id").single();
     if (userInsErr) { console.error("[jace-chat] user insert:", userInsErr); return new Response(userInsErr.message, { status: 500 }); }
     userMsgId = userRow.id;
+    mark("user message insert complete");
     await db.from("conversations").update({ updated_at: new Date().toISOString() }).eq("id", conversationId);
     history = await lineage(db, userMsgId!);
+    mark("lineage complete");
     if (history.length === 0) history = [{ role: "user", content }];
   }
 
@@ -87,6 +104,7 @@ async function handleChat(req: NextRequest) {
     db.rpc("relevant_episodes", { q: lastUserText.slice(0, 200), max_rows: 4 }),
       db.from("jace_settings").select("cycle_day1").maybeSingle(),
   ]);
+  mark("context db queries complete");
 
   let recent = trimRecent(history);
   // Shared Vision: attach media blocks to the just-sent user message so he actually sees them
@@ -116,6 +134,7 @@ async function handleChat(req: NextRequest) {
       }
     }
   }
+  mark("attachment context complete", { attachmentCount: attachments?.length ?? 0 });
   const { blocks: system, personaVersion } = buildSystemBlocks({
     recentMessages: recent, profileFacts: facts ?? [],
     lifeStory: lifeStory?.content ?? null, arcs: arcs ?? [], episodes: eps ?? [],
@@ -123,9 +142,42 @@ async function handleChat(req: NextRequest) {
     lastExchangeAt: prevMsg?.created_at ?? null,
     cycleDay1: settingsRow?.cycle_day1 ?? null,
   });
+  mark("context built", { recentMessages: recent.length, systemBlocks: system.length, personaVersion });
+  const recentStats = recent.reduce((acc, m) => {
+    const chars = typeof m.content === "string"
+      ? m.content.length
+      : m.content.reduce((n, b) => n + (b.type === "text" ? String(b.text ?? "").length : 0), 0);
+    acc.totalChars += chars;
+    acc.maxChars = Math.max(acc.maxChars, chars);
+    return acc;
+  }, { totalChars: 0, maxChars: 0 });
+  const registry = getRegistry();
+  const candidateChain = [registry.active, ...registry.fallbackChain];
+  const selectedModel = candidateChain.find((id) => isConfigured(id)) ?? null;
+  console.info("[jace-chat diag] pre-generate normal chat", {
+    reqId,
+    elapsedMs: Math.round(performance.now() - t0),
+    mode: regenerateOf ? "regenerate" : "new_turn",
+    recentMessageCount: recent.length,
+    approxRecentChars: recentStats.totalChars,
+    maxSingleMessageChars: recentStats.maxChars,
+    attachmentCount: attachments?.length ?? 0,
+    toolCount: historyTools.length + heartTools.length + todoTools.length + projectTools.length + connectionTools.length + creationTools.length,
+    toolNames: [
+      ...historyTools,
+      ...heartTools,
+      ...todoTools,
+      ...projectTools,
+      ...connectionTools,
+      ...creationTools,
+    ].map((t) => t.name),
+    selectedModel,
+  });
   const { stream, modelId } = await generate(system, recent, {
     tools: [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools, ...creationTools], runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
+    debugTiming: mark,
   });
+  mark("generate returned stream", { modelId });
 
   // Persist the assistant row BEFORE streaming (pre-stream writes are reliable);
   // final content lands via end-of-stream update AND a client-side confirm.
@@ -166,6 +218,7 @@ async function handleChat(req: NextRequest) {
           } catch (e) { console.error("[jace-chat] final update threw:", e); }
         }
         controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ assistantId })}\n\n`));
+        mark("stream completes", { chars: full.length, assistantId });
         controller.close();
       }
     },
