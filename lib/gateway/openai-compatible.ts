@@ -7,12 +7,15 @@ export const openaiCompatibleAdapter: Adapter = async (entry, system, messages, 
   const systemText = typeof system === "string" ? system : system.map((b) => b.text).join("\n\n");
   const key = process.env[entry.envKey ?? "OPENAI_API_KEY"];
   if (!key) throw new Error(`missing env ${entry.envKey}`);
+  const useCompletionTokens = /api\.openai\.com/i.test(entry.baseUrl ?? "") || /^gpt-5/i.test(entry.model);
   const res = await fetch(`${entry.baseUrl}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
     body: JSON.stringify({
       model: entry.model,
-      max_tokens: opts.maxTokens ?? entry.maxTokens ?? 2048,
+      ...(useCompletionTokens
+        ? { max_completion_tokens: opts.maxTokens ?? entry.maxTokens ?? 2048 }
+        : { max_tokens: opts.maxTokens ?? entry.maxTokens ?? 2048 }),
       temperature: opts.temperature ?? 1,
       messages: [{ role: "system", content: systemText }, ...messages.filter((m) => m.role !== "system").map((m) => ({ role: m.role, content: contentToText(m.content) }))],
       stream: true,

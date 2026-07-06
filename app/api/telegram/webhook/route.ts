@@ -161,7 +161,8 @@ export async function POST(req: NextRequest) {
     const historyArr = (history ?? []) as (ChatMessage & { created_at?: string })[];
     // second-to-last = the exchange before the message that just arrived
     const lastExchangeAt = historyArr.length >= 2 ? historyArr[historyArr.length - 2].created_at ?? null : null;
-    const recent = trimRecent(historyArr as ChatMessage[]);
+    let recent = trimRecent(historyArr as ChatMessage[]);
+    if (recent.length === 0) recent = [{ role: "user", content: text }];
     const { blocks, personaVersion } = buildSystemBlocks({
       recentMessages: recent, profileFacts: facts ?? [],
       lifeStory: lifeStory?.content ?? null, arcs: arcs ?? [], episodes: eps ?? [],
