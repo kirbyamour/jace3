@@ -10,7 +10,7 @@ type ContentBlock =
 const EMPTY_TOOL_FALLBACK =
   "I found the memory context, but I hit a response-generation issue before I could summarize it. Try asking me again in a simpler way.";
 const FINALIZER_INSTRUCTION =
-  "Using the tool results above, answer the user's original request now in natural language. Do not call tools. Do not return empty content. If the results are partial, summarize what you found and say what is uncertain.";
+  "Using the tool results above, answer the user's latest request directly in natural language. Do not call tools. Do not return empty content. Do not summarize the tool process. Use the results as evidence, then give the answer the user asked for. If the results are partial, say what you found and what remains uncertain in 1-3 short paragraphs.";
 
 function finalizerSystem(system: string | SystemBlock[]): string | SystemBlock[] {
   if (typeof system === "string") return `${system}\n\n${FINALIZER_INSTRUCTION}`;

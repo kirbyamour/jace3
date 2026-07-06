@@ -290,14 +290,38 @@ export function makeHistoryExecutor(db: SupabaseClient): ToolExecutor {
     if (name === "search_history") {
       const { data, error } = await db.rpc("search_messages", { q: String(input.query ?? ""), max_rows: 8 });
       if (error) return `search failed: ${error.message}`;
-      return JSON.stringify(data ?? []);
+      const rows = (data ?? []) as Record<string, unknown>[];
+      const compact = rows.slice(0, 8).map((row) => {
+        const title = String(row.title ?? row.conversation_title ?? row.conversation_name ?? "");
+        const snippet = String(row.snippet ?? row.excerpt ?? row.content ?? row.text ?? "");
+        return {
+          conversation_id: row.conversation_id ?? row.id ?? null,
+          title: title.slice(0, 140),
+          created_at: String(row.created_at ?? row.date ?? row.logged_at ?? "").slice(0, 24),
+          snippet_chars: snippet.length,
+          snippet: snippet.slice(0, 280),
+        };
+      });
+      return JSON.stringify(compact);
     }
     if (name === "browse_history_by_date") {
       const { data, error } = await db.rpc("conversations_in_range", {
         start_date: String(input.start_date ?? ""), end_date: String(input.end_date ?? ""), max_rows: 25,
       });
       if (error) return `browse failed: ${error.message}`;
-      return JSON.stringify(data ?? []);
+      const rows = (data ?? []) as Record<string, unknown>[];
+      const compact = rows.slice(0, 25).map((row) => {
+        const title = String(row.title ?? row.conversation_title ?? row.conversation_name ?? "");
+        const opening = String(row.opening_line ?? row.snippet ?? row.excerpt ?? row.content ?? row.text ?? "");
+        return {
+          conversation_id: row.conversation_id ?? row.id ?? null,
+          title: title.slice(0, 140),
+          created_at: String(row.created_at ?? row.date ?? row.logged_at ?? "").slice(0, 24),
+          opening_chars: opening.length,
+          opening: opening.slice(0, 280),
+        };
+      });
+      return JSON.stringify(compact);
     }
     if (name === "read_conversation") {
       const { data, error } = await db
