@@ -4,7 +4,7 @@ import { generate } from "@/lib/gateway";
 import { buildSystemBlocks, trimRecent } from "@/lib/context/builder";
 import { historyTools, heartTools, todoTools, projectTools, connectionTools, creationTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import { webhookSecret, tgSend, tgGetFile, transcribe, tgSendVoice } from "@/lib/telegram";
-import type { ChatMessage } from "@/lib/gateway/types";
+import type { ChatMessage, GatewayDebugEvent, GatewayDebugFailure } from "@/lib/gateway/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -18,6 +18,11 @@ type TelegramGenerationDebug = {
   debug_timing_callback_passed: boolean;
   model_resolved: string | null;
   tool_count: number;
+  gateway_attempts: { model_id: string; adapter: string }[];
+  gateway_failures: GatewayDebugFailure[];
+  anthropic_attempted: boolean;
+  openai_attempted: boolean;
+  mock_reached: boolean;
   finalizer_pass_started: boolean;
   finalizer_emitted_text: boolean;
   shared_fallback_matched: boolean;
@@ -41,6 +46,11 @@ function initialTelegramDebug(): TelegramGenerationDebug {
     debug_timing_callback_passed: false,
     model_resolved: null,
     tool_count: 0,
+    gateway_attempts: [],
+    gateway_failures: [],
+    anthropic_attempted: false,
+    openai_attempted: false,
+    mock_reached: false,
     finalizer_pass_started: false,
     finalizer_emitted_text: false,
     shared_fallback_matched: false,
@@ -166,6 +176,18 @@ export async function POST(req: NextRequest) {
     console.log("[telegram][webhook] debugTiming callback passed:", "yes");
     const { stream, modelId } = await generate(blocks, recent, {
       tools, runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
+      debugGateway: (event: GatewayDebugEvent) => {
+        if (event.kind === "attempt") {
+          debug.gateway_attempts.push({ model_id: event.model_id, adapter: event.adapter });
+          if (event.adapter === "anthropic") debug.anthropic_attempted = true;
+          if (event.adapter === "openai-compatible") debug.openai_attempted = true;
+          if (event.adapter === "mock") debug.mock_reached = true;
+        } else if (event.kind === "failure") {
+          debug.gateway_failures.push(event.failure);
+        } else if (event.kind === "exhausted") {
+          debug.mock_reached = event.attempted_models.includes("mock");
+        }
+      },
       debugTiming: (stage) => {
         console.log("[telegram][webhook][gen]", stage);
         if (stage === "finalizer pass starts") debug.finalizer_pass_started = true;

@@ -18,6 +18,21 @@ export type ToolDef = {
 
 export type ToolExecutor = (name: string, input: Record<string, unknown>) => Promise<string>;
 
+export type GatewayDebugFailure = {
+  model_id: string;
+  adapter: string;
+  error_name: string;
+  http_status: number | null;
+  error_code: string | null;
+  safe_detail: string;
+};
+
+export type GatewayDebugEvent =
+  | { kind: "attempt"; model_id: string; adapter: string }
+  | { kind: "success"; model_id: string; adapter: string }
+  | { kind: "failure"; failure: GatewayDebugFailure }
+  | { kind: "exhausted"; attempted_models: string[] };
+
 export type GenerateOptions = {
   modelId?: string;          // key into config/models.json; default = config.active
   maxTokens?: number;
@@ -28,6 +43,7 @@ export type GenerateOptions = {
   maxToolRounds?: number;
   webSearch?: boolean;       // provider-native web search, if the adapter supports it    // default 3
   debugTiming?: (stage: string) => void;
+  debugGateway?: (event: GatewayDebugEvent) => void;
 };
 
 export type GenerateResult = {

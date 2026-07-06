@@ -1,5 +1,5 @@
 import registryJson from "@/config/models.json";
-import type { Adapter, ChatMessage, GenerateOptions, GenerateResult, ModelRegistry, SystemBlock } from "./types";
+import type { Adapter, ChatMessage, GenerateOptions, GenerateResult, GatewayDebugEvent, GatewayDebugFailure, ModelRegistry, SystemBlock } from "./types";
 import { anthropicAdapter } from "./anthropic";
 import { openaiCompatibleAdapter } from "./openai-compatible";
 import { mockAdapter } from "./mock";
@@ -11,6 +11,31 @@ const adapters: Record<string, Adapter> = {
   "openai-compatible": openaiCompatibleAdapter,
   mock: mockAdapter,
 };
+
+function safeGatewayFailure(modelId: string, adapter: string, err: unknown): GatewayDebugFailure {
+  const e = err instanceof Error ? err : new Error(String(err));
+  const raw = `${e.name}: ${e.message}`;
+  const statusMatch = raw.match(/\b(?:anthropic|[A-Za-z0-9._-]+)\s+(\d{3})\b/);
+  const code = (e as { code?: unknown; status?: unknown }).code;
+  const status = typeof (e as { status?: unknown }).status === "number"
+    ? (e as { status?: number }).status!
+    : statusMatch ? Number(statusMatch[1]) : null;
+  const codeText = typeof code === "string" ? code : typeof code === "number" ? String(code) : null;
+  const safe_detail =
+    /missing env/i.test(raw) ? "missing env" :
+    /AbortError/i.test(raw) ? "aborted" :
+    /fetch/i.test(raw) ? "fetch failed" :
+    status ? `http ${status}` :
+    "adapter error";
+  return {
+    model_id: modelId,
+    adapter,
+    error_name: e.name || "Error",
+    http_status: status,
+    error_code: codeText,
+    safe_detail,
+  };
+}
 
 export function getRegistry(): ModelRegistry { return registry; }
 
@@ -37,10 +62,16 @@ export async function generate(
     if (!entry) continue;
     if (!isConfigured(id)) { lastErr = new Error(`${id} not configured`); continue; }
     try {
+      opts.debugGateway?.({ kind: "attempt", model_id: id, adapter: entry.adapter });
       const stream = await adapters[entry.adapter](entry, system, messages, opts);
+      opts.debugGateway?.({ kind: "success", model_id: id, adapter: entry.adapter });
       return { stream, modelId: id };
-    } catch (e) { lastErr = e; }
+    } catch (e) {
+      lastErr = e;
+      opts.debugGateway?.({ kind: "failure", failure: safeGatewayFailure(id, entry.adapter, e) });
+    }
   }
+  opts.debugGateway?.({ kind: "exhausted", attempted_models: Array.from(tried) });
   throw lastErr ?? new Error("no model available");
 }
 
