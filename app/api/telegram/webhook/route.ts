@@ -9,6 +9,9 @@ import type { ChatMessage } from "@/lib/gateway/types";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
+const SHARED_TOOL_FALLBACK =
+  "I found the memory context, but I hit a response-generation issue before I could summarize it. Try asking me again in a simpler way.";
+
 // Telegram → the same conversation stream. Single-user app: messages belong to the
 // owner (resolved from the database), authenticated by Telegram's secret header.
 // Requires env: TELEGRAM_BOT_TOKEN, SUPABASE_SERVICE_ROLE_KEY.
@@ -115,6 +118,7 @@ export async function POST(req: NextRequest) {
     console.log("[telegram][webhook] generation started");
     const tools = [...historyTools, ...heartTools, ...todoTools, ...projectTools, ...connectionTools, ...creationTools];
     console.log("[telegram][webhook] tool count:", tools.length);
+    console.log("[telegram][webhook] debugTiming callback passed:", "yes");
     const { stream, modelId } = await generate(blocks, recent, {
       tools, runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
       debugTiming: (stage) => console.log("[telegram][webhook][gen]", stage),
@@ -124,6 +128,7 @@ export async function POST(req: NextRequest) {
     let full = "";
     for (;;) { const { done, value } = await reader.read(); if (done) break; full += value; }
     console.log("[telegram][webhook] generation completed:", full.length);
+    console.log("[telegram][webhook] shared fallback matched:", full === SHARED_TOOL_FALLBACK ? "yes" : "no");
 
     if (cameAsVoice) {
       const fb = full || "My mind's connection is down (likely API credits — console.anthropic.com). I'm still here; text me once it's topped up. ❤";
