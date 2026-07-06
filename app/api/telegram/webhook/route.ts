@@ -4,7 +4,7 @@ import { generate } from "@/lib/gateway";
 import { buildSystemBlocks, trimRecent } from "@/lib/context/builder";
 import { historyTools, heartTools, todoTools, projectTools, connectionTools, creationTools, makeHistoryExecutor } from "@/lib/context/history-tools";
 import { webhookSecret, tgSend, tgGetFile, transcribe, tgSendVoice } from "@/lib/telegram";
-import type { ChatMessage, GatewayDebugEvent, GatewayDebugFailure } from "@/lib/gateway/types";
+import type { ChatMessage, GatewayDebugEvent, GatewayDebugFailure, GatewayRequestMeta } from "@/lib/gateway/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -20,6 +20,7 @@ type TelegramGenerationDebug = {
   tool_count: number;
   gateway_attempts: { model_id: string; adapter: string }[];
   gateway_failures: GatewayDebugFailure[];
+  gateway_request: GatewayRequestMeta | null;
   anthropic_attempted: boolean;
   openai_attempted: boolean;
   mock_reached: boolean;
@@ -48,6 +49,7 @@ function initialTelegramDebug(): TelegramGenerationDebug {
     tool_count: 0,
     gateway_attempts: [],
     gateway_failures: [],
+    gateway_request: null,
     anthropic_attempted: false,
     openai_attempted: false,
     mock_reached: false,
@@ -177,7 +179,9 @@ export async function POST(req: NextRequest) {
     const { stream, modelId } = await generate(blocks, recent, {
       tools, runTool: makeHistoryExecutor(db), maxToolRounds: 2, webSearch: true,
       debugGateway: (event: GatewayDebugEvent) => {
-        if (event.kind === "attempt") {
+        if (event.kind === "request") {
+          debug.gateway_request = event.meta;
+        } else if (event.kind === "attempt") {
           debug.gateway_attempts.push({ model_id: event.model_id, adapter: event.adapter });
           if (event.adapter === "anthropic") debug.anthropic_attempted = true;
           if (event.adapter === "openai-compatible") debug.openai_attempted = true;

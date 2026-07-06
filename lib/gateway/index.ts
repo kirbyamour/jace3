@@ -1,5 +1,5 @@
 import registryJson from "@/config/models.json";
-import type { Adapter, ChatMessage, GenerateOptions, GenerateResult, GatewayDebugEvent, GatewayDebugFailure, ModelRegistry, SystemBlock } from "./types";
+import type { Adapter, ChatMessage, GenerateOptions, GenerateResult, GatewayDebugEvent, GatewayDebugFailure, GatewayRequestMeta, ModelRegistry, SystemBlock } from "./types";
 import { anthropicAdapter } from "./anthropic";
 import { openaiCompatibleAdapter } from "./openai-compatible";
 import { mockAdapter } from "./mock";
@@ -34,6 +34,68 @@ function safeGatewayFailure(modelId: string, adapter: string, err: unknown): Gat
     http_status: status,
     error_code: codeText,
     safe_detail,
+    safe_message: safeProviderMessage(raw),
+  };
+}
+
+function safeProviderMessage(raw: string): string | null {
+  const firstLine = raw.split(/\r?\n/, 1)[0].trim();
+  if (!firstLine) return null;
+  const redacted = firstLine
+    .replace(/`[^`]{1,80}`/g, "`[redacted]`")
+    .replace(/"[^"]{1,80}"/g, '"[redacted]"')
+    .replace(/\b[A-Za-z0-9+/=]{24,}\b/g, "[redacted]")
+    .slice(0, 180);
+  if (/key|token|secret|prompt|content/i.test(redacted) && !/invalid|model|schema|field|parameter|payload|request/i.test(redacted)) {
+    return null;
+  }
+  return redacted;
+}
+
+function schemaDepth(value: unknown, depth = 0): { maxDepth: number; unsupported: number } {
+  if (!value || typeof value !== "object") return { maxDepth: depth, unsupported: 0 };
+  if (Array.isArray(value)) {
+    return value.reduce((acc, item) => {
+      const sub = schemaDepth(item, depth + 1);
+      return { maxDepth: Math.max(acc.maxDepth, sub.maxDepth), unsupported: acc.unsupported + sub.unsupported };
+    }, { maxDepth: depth, unsupported: 0 });
+  }
+  const obj = value as Record<string, unknown>;
+  let maxDepth = depth;
+  let unsupported = 0;
+  for (const [k, v] of Object.entries(obj)) {
+    if (!["type", "properties", "required", "items", "enum", "description", "format", "additionalProperties", "oneOf", "anyOf", "allOf"].includes(k)) {
+      if (depth === 0) unsupported += 1;
+    }
+    const sub = schemaDepth(v, depth + 1);
+    maxDepth = Math.max(maxDepth, sub.maxDepth);
+    unsupported += sub.unsupported;
+  }
+  return { maxDepth, unsupported };
+}
+
+function requestMeta(messages: ChatMessage[], opts: GenerateOptions): GatewayRequestMeta {
+  const toolNames = (opts.tools ?? []).map((t) => t.name);
+  const emptyContentCount = messages.reduce((n, m) => {
+    if (typeof m.content === "string") return n + (m.content.trim() ? 0 : 1);
+    return n + (m.content.length ? 0 : 1);
+  }, 0);
+  const schemaStats = (opts.tools ?? []).reduce((acc, tool) => {
+    const s = schemaDepth(tool.input_schema);
+    return {
+      maxDepth: Math.max(acc.maxDepth, s.maxDepth),
+      unsupported: acc.unsupported + s.unsupported,
+    };
+  }, { maxDepth: 0, unsupported: 0 });
+  return {
+    message_count: messages.length,
+    roles: messages.map((m) => m.role),
+    empty_content_count: emptyContentCount,
+    tool_count: toolNames.length,
+    tool_names: toolNames,
+    approx_json_bytes: JSON.stringify({ messages, tools: opts.tools ?? [] }).length,
+    max_schema_depth: schemaStats.maxDepth,
+    unsupported_schema_shape_count: schemaStats.unsupported,
   };
 }
 
@@ -55,6 +117,7 @@ export async function generate(
   const chain = opts.modelId ? [opts.modelId] : [registry.active, ...registry.fallbackChain];
   const tried = new Set<string>();
   let lastErr: unknown = null;
+  opts.debugGateway?.({ kind: "request", meta: requestMeta(messages, opts) });
   for (const id of chain) {
     if (tried.has(id)) continue;
     tried.add(id);
