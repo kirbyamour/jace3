@@ -22,14 +22,7 @@ export const openaiCompatibleAdapter: Adapter = async (entry, system, messages, 
     }),
     signal: opts.signal,
   });
-  if (!res.ok || !res.body) {
-    const { summary, code, type } = await safeProviderErrorSummary(res);
-    const err = new Error(`${entry.label} ${res.status}: ${summary}`);
-    (err as { code?: string; providerType?: string; status?: number }).code = code ?? undefined;
-    (err as { providerType?: string }).providerType = type ?? undefined;
-    (err as { status?: number }).status = res.status;
-    throw err;
-  }
+  if (!res.ok || !res.body) throw new Error(`${entry.label} ${res.status}: ${await res.text()}`);
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -55,27 +48,3 @@ export const openaiCompatibleAdapter: Adapter = async (entry, system, messages, 
     cancel() { reader.cancel(); },
   });
 };
-
-async function safeProviderErrorSummary(res: Response): Promise<{ summary: string; code: string | null; type: string | null }> {
-  const text = await res.clone().text().catch(() => "");
-  const trimmed = text.trim();
-  let code: string | null = null;
-  let type: string | null = null;
-  let summary = trimmed.split(/\r?\n/, 1)[0].slice(0, 180);
-  try {
-    const parsed = JSON.parse(trimmed);
-    const err = parsed?.error ?? parsed;
-    type = typeof err?.type === "string" ? err.type : null;
-    code = typeof err?.code === "string" ? err.code : null;
-    const msg = typeof err?.message === "string" ? err.message : null;
-    if (msg) summary = msg;
-  } catch {
-    // fall back to plain text
-  }
-  summary = summary
-    .replace(/`[^`]{1,80}`/g, "`[redacted]`")
-    .replace(/"[^"]{1,80}"/g, '"[redacted]"')
-    .replace(/\b[A-Za-z0-9+/=]{24,}\b/g, "[redacted]")
-    .slice(0, 180);
-  return { summary: summary || `HTTP ${res.status}`, code, type };
-}
